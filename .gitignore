@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Hammerspoon
+*.log
+config-local.lua
+
+# Personal configs that shouldn't be shared
+*-personal.lua
+*-local.lua
+
+# Backup files
+*.bak
+*.backup
+*~
