@@ -19,3 +19,6 @@ config-local.lua
 *.bak
 *.backup
 *~
+
+# Local contributor guide (not versioned)
+AGENTS.md

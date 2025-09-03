@@ -8,6 +8,7 @@ A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidia
 - **📅 Smart due date parsing** - Supports multiple formats (`📅 2024-03-15`, `due:: [[2024-03-15]]`, etc.)
 - **🔺 Priority recognition** - Visual priority levels with emoji indicators  
 - **📊 Smart grouping** - Tasks organized by Overdue, Today, This Week, Others
+- **🕒 Recent-first ordering** - Within each group, newer tasks appear first
 - **🎯 Direct interaction** - Click to open in Obsidian, submenu to mark done
 - **⚡ Instant updates** - File watcher triggers immediate menubar refresh
 - **🔇 Quiet operation** - No popup alerts, console logging only
@@ -74,6 +75,12 @@ local config = {
     vaultPath = os.getenv("HOME") .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
     menubarTitle = "☑︎",
     debounceDelay = 2, -- seconds to wait after file changes
+    menuLimits = {
+        overdue = 15,   -- items shown in Overdue
+        today = 15,     -- items shown in Today
+        thisWeek = 10,  -- items shown in This Week
+        others = 10     -- items shown in Other Tasks
+    }
 }
 ```
 
@@ -91,6 +98,9 @@ The script will automatically find your vault if it's in common locations:
 - **Minimal memory** - Small Lua tables, cleaned up automatically
 
 ## Troubleshooting
+
+### Showing More Items
+If you see "N more items" in a section, increase the limits in `menuLimits` in `obsidian-todos.lua` (e.g., set `overdue = 30`). Large values may make the menu tall.
 
 ### Tasks not appearing
 1. Check vault path in config

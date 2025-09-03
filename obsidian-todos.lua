@@ -22,6 +22,12 @@ local config = {
     vaultPath = os.getenv("HOME") .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
     menubarTitle = "☑︎",
     debounceDelay = 2, -- Prevents multiple scans when saving triggers multiple FSEvents
+    menuLimits = {
+        overdue = 15,   -- max items to show in Overdue
+        today = 15,     -- max items to show in Today
+        thisWeek = 10,  -- max items to show in This Week
+        others = 10     -- max items to show in Other Tasks
+    }
 }
 
 -- State persists across refreshes to avoid redundant work
@@ -29,6 +35,7 @@ local menubar = nil
 local watcher = nil
 local cachedTasks = {}
 local lastScanTime = 0
+local fileMtimeCache = {}
 
 function obsidianTodos.scanVault()
     -- Support both Apple Silicon and Intel Mac installations
@@ -68,7 +75,7 @@ function obsidianTodos.scanVault()
             local fileName = filePath:match("([^/]+)%.md$") or filePath:match("([^/]+)$")
             local cleanText = taskText:match("-%s*%[%s*%]%s*(.*)") or taskText
             cleanText = cleanText:match("^%s*(.-)%s*$") -- Users often have trailing spaces
-            
+
             local task = {
                 path = filePath,
                 file = fileName,
@@ -76,8 +83,23 @@ function obsidianTodos.scanVault()
                 text = cleanText,
                 dueDate = nil,
                 priority = 5,
-                urgency = 99
+                urgency = 99,
+                mtime = 0
             }
+
+            -- Cache file modification times to approximate task recency
+            if fileMtimeCache[filePath] == nil then
+                local mattr = nil
+                if hs and hs.fs and hs.fs.attributes then
+                    mattr = hs.fs.attributes(filePath)
+                end
+                if mattr and mattr.modification then
+                    fileMtimeCache[filePath] = mattr.modification
+                else
+                    fileMtimeCache[filePath] = 0
+                end
+            end
+            task.mtime = fileMtimeCache[filePath]
             
             -- Support multiple date formats since Obsidian plugins vary
             local dateStr = task.text:match("📅%s*(%d%d%d%d%-%d%d%-%d%d)") or
@@ -123,9 +145,11 @@ function obsidianTodos.scanVault()
     end
     handle:close()
     
-    -- Most urgent tasks bubble to top for immediate visibility
+    -- Most urgent tasks bubble to top; within each group show most recent first
     table.sort(tasks, function(a, b)
         if a.urgency ~= b.urgency then return a.urgency < b.urgency end
+        if a.mtime ~= b.mtime then return a.mtime > b.mtime end -- newer files first
+        if a.file == b.file and a.line ~= b.line then return a.line > b.line end -- later lines first
         if a.dueDate and b.dueDate and a.dueDate ~= b.dueDate then return a.dueDate < b.dueDate end
         return a.priority < b.priority
     end)
@@ -182,19 +206,23 @@ function obsidianTodos.buildMenu()
         
         -- Order matters: most urgent sections appear first
         if #overdue > 0 then
-            obsidianTodos.addMenuSection(menu, "🚨 Overdue (" .. #overdue .. ")", overdue, 5)
+            local maxOverdue = (config.menuLimits and config.menuLimits.overdue) or 5
+            obsidianTodos.addMenuSection(menu, "🚨 Overdue (" .. #overdue .. ")", overdue, maxOverdue)
         end
         
         if #today > 0 then
-            obsidianTodos.addMenuSection(menu, "📅 Today (" .. #today .. ")", today, 5)
+            local maxToday = (config.menuLimits and config.menuLimits.today) or 5
+            obsidianTodos.addMenuSection(menu, "📅 Today (" .. #today .. ")", today, maxToday)
         end
         
         if #thisWeek > 0 then
-            obsidianTodos.addMenuSection(menu, "📆 This Week (" .. #thisWeek .. ")", thisWeek, 3)
+            local maxThisWeek = (config.menuLimits and config.menuLimits.thisWeek) or 3
+            obsidianTodos.addMenuSection(menu, "📆 This Week (" .. #thisWeek .. ")", thisWeek, maxThisWeek)
         end
         
         if #others > 0 then
-            local showCount = math.min(#others, 5)
+            local maxOthers = (config.menuLimits and config.menuLimits.others) or 5
+            local showCount = math.min(#others, maxOthers)
             obsidianTodos.addMenuSection(menu, "📋 Other Tasks (" .. #others .. ")", others, showCount)
         end
     end
