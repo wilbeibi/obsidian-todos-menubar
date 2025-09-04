@@ -302,8 +302,16 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
             end,
             menu = {
                 {
-                    title = "Mark as Done",
+                    title = "✅ Mark as Done",
                     fn = function() obsidianTodos.markTaskDone(task) end
+                },
+                {
+                    title = "⏳ Mark In Progress",
+                    fn = function() obsidianTodos.markTaskInProgress(task) end
+                },
+                {
+                    title = "❌ Mark Cancelled",
+                    fn = function() obsidianTodos.markTaskCancelled(task) end
                 },
                 {
                     title = "Copy Task Text",
@@ -367,26 +375,23 @@ function obsidianTodos.openTaskInObsidian(task)
     hs.execute('open -a "Obsidian" "' .. task.path .. '"')
 end
 
--- Mark a task as done by rewriting the file
-function obsidianTodos.markTaskDone(task)
+-- Helper to update a task status (done, in progress, cancelled)
+local function updateTaskStatus(task, bracket, emoji)
     local filePath = task.path
     local file = io.open(filePath, "r")
     if not file then
-        print("Error: Could not open file to mark task done: " .. filePath)
+        print("Error: Could not open file to update task status: " .. filePath)
         return
     end
-
     local lines = {}
     local lineNum = 1
     for line in file:lines() do
         if lineNum == task.line then
-            -- Preserve original line format while marking done
-            local doneText = line:gsub("%[ %]", "[x]")
-            -- Date stamp provides completion history
-            if not doneText:find("✅") then
-                 doneText = doneText .. " ✅ " .. os.date("%Y-%m-%d")
+            local newText = line:gsub("%[ %]", "[" .. bracket .. "]")
+            if not newText:find(emoji) then
+                newText = newText .. " " .. emoji .. " " .. os.date("%Y-%m-%d")
             end
-            table.insert(lines, doneText)
+            table.insert(lines, newText)
         else
             table.insert(lines, line)
         end
@@ -394,25 +399,34 @@ function obsidianTodos.markTaskDone(task)
     end
     file:close()
 
-    -- Atomic write would be better but adds complexity
     file = io.open(filePath, "w")
     if not file then
-        print("Error: Could not write to file to mark task done: " .. filePath)
+        print("Error: Could not write to file: " .. filePath)
         return
     end
-
-    for _, line in ipairs(lines) do
-        file:write(line .. "\n")
-    end
+    for _, l in ipairs(lines) do file:write(l .. "\n") end
     file:close()
 
-    print("Task marked as done: " .. task.text)
-
-    -- Delay allows file watcher to catch change naturally
+    -- Refresh the menu after a short delay
     hs.timer.doAfter(0.5, function()
         lastScanTime = 0
         obsidianTodos.updateMenu()
     end)
+end
+
+-- Mark a task as done by rewriting the file
+function obsidianTodos.markTaskDone(task)
+    updateTaskStatus(task, "x", "✅")
+end
+
+-- Mark a task as In Progress by rewriting the file
+function obsidianTodos.markTaskInProgress(task)
+    updateTaskStatus(task, "~", "⏳")
+end
+
+-- Mark a task as Cancelled by rewriting the file
+function obsidianTodos.markTaskCancelled(task)
+    updateTaskStatus(task, "!", "❌")
 end
 
 -- Initialize the application
