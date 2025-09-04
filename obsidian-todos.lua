@@ -52,6 +52,7 @@ local function parseTask(filePath, lineNumber, taskText)
         line = lineNumber,
         text = cleanText,
         dueDate = nil,
+        snoozeUntil = nil,
         priority = 5,
         urgency = 99,
         mtime = 0
@@ -74,6 +75,15 @@ local function parseTask(filePath, lineNumber, taskText)
         local y, m, d = dateStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
         if y and m and d then
             task.dueDate = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
+        end
+    end
+
+    -- Parse snooze until date (🛫 YYYY-MM-DD)
+    local snoozeStr = task.text:match("🛫%s*(%d%d%d%d%-%d%d%-%d%d)")
+    if snoozeStr then
+        local y, m, d = snoozeStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
+        if y and m and d then
+            task.snoozeUntil = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
         end
     end
     
@@ -177,10 +187,15 @@ function obsidianTodos.scanVault()
     end
     
     local tasks = {}
+    local now = os.time()
     for line in handle:lines() do
         local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
         if filePath and lineNumber and taskText then
-            table.insert(tasks, parseTask(filePath, tonumber(lineNumber), taskText))
+            local task = parseTask(filePath, tonumber(lineNumber), taskText)
+            -- Hide tasks snoozed into the future
+            if not (task.snoozeUntil and task.snoozeUntil > now) then
+                table.insert(tasks, task)
+            end
         end
     end
     handle:close()
@@ -213,7 +228,6 @@ function obsidianTodos.updateMenu()
     end
     
     menubar:setTitle(config.menubarTitle .. badge)
-    menubar:setMenu(obsidianTodos.buildMenu())
     
     print("Refreshed - found " .. #cachedTasks .. " tasks")
 end
@@ -314,11 +328,16 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
                     fn = function() obsidianTodos.markTaskCancelled(task) end
                 },
                 {
-                    title = "Copy Task Text",
-                    fn = function()
-                        hs.pasteboard.setContents(task.text)
-                        print("Task text copied to clipboard")
-                    end
+                    title = "📆 Due Tomorrow",
+                    fn = function() obsidianTodos.markTaskDueTomorrow(task) end
+                },
+                {
+                    title = "📆 Due This Week",
+                    fn = function() obsidianTodos.markTaskDueThisWeek(task) end
+                },
+                {
+                    title = "🛫 Snooze 1 Week",
+                    fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end
                 }
             }
         })
@@ -333,6 +352,50 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
     end
     
     table.insert(menu, { title = "-" })
+end
+
+-- Snooze a task by adding/updating 🛫 YYYY-MM-DD (7 days out)
+function obsidianTodos.markTaskSnoozeOneWeek(task)
+    local filePath = task.path
+    local file = io.open(filePath, "r")
+    if not file then
+        print("Error: Could not open file to snooze task: " .. filePath)
+        return
+    end
+
+    local targetDate = os.date("%Y-%m-%d", os.time() + 7 * 24 * 60 * 60)
+    local lines = {}
+    local lineNum = 1
+
+    for line in file:lines() do
+        if lineNum == task.line then
+            local newLine = line
+            local tmp, count = newLine:gsub("🛫%s*%d%d%d%d%-%d%d%-%d%d", "🛫 " .. targetDate)
+            if count == 0 then
+                newLine = newLine .. " 🛫 " .. targetDate
+            else
+                newLine = tmp
+            end
+            table.insert(lines, newLine)
+        else
+            table.insert(lines, line)
+        end
+        lineNum = lineNum + 1
+    end
+    file:close()
+
+    file = io.open(filePath, "w")
+    if not file then
+        print("Error: Could not write to file: " .. filePath)
+        return
+    end
+    for _, l in ipairs(lines) do file:write(l .. "\n") end
+    file:close()
+
+    hs.timer.doAfter(0.5, function()
+        lastScanTime = 0
+        obsidianTodos.updateMenu()
+    end)
 end
 
 -- Get vault name from config or auto-detect from path
@@ -429,6 +492,78 @@ function obsidianTodos.markTaskCancelled(task)
     updateTaskStatus(task, "!", "❌")
 end
 
+-- Helper to set or update a task's due date by day offset
+local function setTaskDueByOffset(task, daysOffset)
+    local filePath = task.path
+    local file = io.open(filePath, "r")
+    if not file then
+        print("Error: Could not open file to set due date: " .. filePath)
+        return
+    end
+
+    local targetDate = os.date("%Y-%m-%d", os.time() + daysOffset * 24 * 60 * 60)
+    local lines = {}
+    local lineNum = 1
+
+    for line in file:lines() do
+        if lineNum == task.line then
+            local newLine = line
+            local replaced = false
+
+            -- Replace common due date formats while preserving style
+            local patterns = {
+                {pat = "📅%s*%d%d%d%d%-%d%d%-%d%d", rep = "📅 " .. targetDate},
+                {pat = "due::%s*%[%[%d%d%d%d%-%d%d%-%d%d%]%]", rep = "due:: [[" .. targetDate .. "]]"},
+                {pat = "due:%s*%d%d%d%d%-%d%d%-%d%d", rep = "due: " .. targetDate},
+                {pat = "@due%(%d%d%d%d%-%d%d%-%d%d%)", rep = "@due(" .. targetDate .. ")"}
+            }
+
+            for _, p in ipairs(patterns) do
+                local tmp, count = newLine:gsub(p.pat, p.rep)
+                if count > 0 then
+                    newLine = tmp
+                    replaced = true
+                end
+            end
+
+            if not replaced then
+                -- Append a due date if none was present
+                newLine = newLine .. " 📅 " .. targetDate
+            end
+
+            table.insert(lines, newLine)
+        else
+            table.insert(lines, line)
+        end
+        lineNum = lineNum + 1
+    end
+    file:close()
+
+    file = io.open(filePath, "w")
+    if not file then
+        print("Error: Could not write to file: " .. filePath)
+        return
+    end
+    for _, l in ipairs(lines) do file:write(l .. "\n") end
+    file:close()
+
+    -- Refresh the menu after a short delay
+    hs.timer.doAfter(0.5, function()
+        lastScanTime = 0
+        obsidianTodos.updateMenu()
+    end)
+end
+
+-- Set or update a task's due date to tomorrow
+function obsidianTodos.markTaskDueTomorrow(task)
+    setTaskDueByOffset(task, 1)
+end
+
+-- Set or update a task's due date to 7 days from now
+function obsidianTodos.markTaskDueThisWeek(task)
+    setTaskDueByOffset(task, 7)
+end
+
 -- Initialize the application
 function obsidianTodos.init()
     menubar = hs.menubar.new()
@@ -436,15 +571,38 @@ function obsidianTodos.init()
         print("Failed to create Obsidian TODOs menubar")
         return
     end
+    -- Build menu on-demand to avoid closing an open menu during refresh
+    menubar:setMenu(function()
+        return obsidianTodos.buildMenu()
+    end)
     
     -- File watcher eliminates polling overhead
-    watcher = hs.pathwatcher.new(config.vaultPath, function()
-        print("File change detected, refreshing...")
-        -- Batch rapid saves into single refresh
-        hs.timer.doAfter(config.debounceDelay, function()
-            lastScanTime = 0
-            obsidianTodos.updateMenu()
-        end)
+    watcher = hs.pathwatcher.new(config.vaultPath, function(paths)
+        -- Ignore changes in folders we don't scan to avoid needless refreshes
+        local function isIgnored(p)
+            return p:find("/%.obsidian/") or p:find("/Archive/") or p:find("/Templates/") or p:find("/%.trash/")
+        end
+
+        local shouldRefresh = false
+        if type(paths) == "table" then
+            for _, p in ipairs(paths) do
+                if not isIgnored(p) then
+                    shouldRefresh = true
+                    break
+                end
+            end
+        else
+            shouldRefresh = not isIgnored(paths or "")
+        end
+
+        if shouldRefresh then
+            print("File change detected, refreshing...")
+            -- Batch rapid saves into single refresh
+            hs.timer.doAfter(config.debounceDelay, function()
+                lastScanTime = 0
+                obsidianTodos.updateMenu()
+            end)
+        end
     end):start()
     
     -- Populate menu immediately on load
