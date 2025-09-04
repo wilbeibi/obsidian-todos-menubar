@@ -40,8 +40,14 @@ local function parseTask(filePath, lineNumber, taskText)
     local cleanText = taskText:match("-%s*%[%s*%]%s*(.*)") or taskText
     cleanText = cleanText:match("^%s*(.-)%s*$") -- Trim whitespace
 
+    -- Convert relative path to absolute path
+    local absolutePath = filePath
+    if filePath:match("^%./") then
+        absolutePath = config.vaultPath .. "/" .. filePath:sub(3) -- Remove "./" prefix
+    end
+
     local task = {
-        path = filePath,
+        path = absolutePath,
         file = fileName,
         line = lineNumber,
         text = cleanText,
@@ -52,11 +58,11 @@ local function parseTask(filePath, lineNumber, taskText)
     }
 
     -- Cache file modification times
-    if fileMtimeCache[filePath] == nil then
-        local mattr = hs and hs.fs and hs.fs.attributes(filePath)
-        fileMtimeCache[filePath] = mattr and mattr.modification or 0
+    if fileMtimeCache[absolutePath] == nil then
+        local mattr = hs and hs.fs and hs.fs.attributes(absolutePath)
+        fileMtimeCache[absolutePath] = mattr and mattr.modification or 0
     end
-    task.mtime = fileMtimeCache[filePath]
+    task.mtime = fileMtimeCache[absolutePath]
     
     -- Parse due date from various formats
     local dateStr = task.text:match("📅%s*(%d%d%d%d%-%d%d%-%d%d)") or
@@ -139,24 +145,30 @@ local function calculateWeightedScore(task)
 end
 
 function obsidianTodos.scanVault()
-    -- Find ripgrep executable
-    local handle = io.popen("which rg 2>/dev/null")
-    if not handle then
+    -- Find ripgrep executable - try multiple common locations
+    local rgPath = nil
+    local possiblePaths = {"/opt/homebrew/bin/rg", "/usr/local/bin/rg", "rg"}
+    
+    for _, path in ipairs(possiblePaths) do
+        local handle = io.popen("which " .. path .. " 2>/dev/null")
+        if handle then
+            local result = handle:read("*a"):gsub("\n", "")
+            handle:close()
+            if result ~= "" then
+                rgPath = path
+                break
+            end
+        end
+    end
+    
+    if not rgPath then
         print("Error: ripgrep (rg) not found. Install with: brew install ripgrep")
         return {}
     end
     
-    local rgPath = handle:read("*a"):gsub("\n", "")
-    handle:close()
-    
-    if rgPath == "" then
-        print("Error: ripgrep (rg) not found. Install with: brew install ripgrep")
-        return {}
-    end
-    
-    local cmd = rgPath .. " --no-heading --with-filename --line-number " ..
+    local cmd = "cd '" .. config.vaultPath .. "' && " .. rgPath .. " --no-heading --with-filename --line-number " ..
                 "--glob '!Archive/**' --glob '!.obsidian/**' --glob '!Templates/**' --glob '!.trash/**' " ..
-                "'^\\s*-\\s*\\[\\s*\\]\\s*.+' '" .. config.vaultPath .. "' 2>/dev/null"
+                "'^\\s*-\\s*\\[\\s*\\]\\s*.+' . 2>/dev/null"
     
     local handle = io.popen(cmd)
     if not handle then
