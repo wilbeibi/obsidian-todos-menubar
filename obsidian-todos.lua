@@ -1,8 +1,9 @@
--- Obsidian TODOs Menubar v1.0.0
+-- Obsidian TODOs Menubar v1.1.0
 -- A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidian tasks.
 -- 
 -- Features:
 -- - Fast ripgrep scanning with file watcher for instant updates
+-- - Weighted sorting by urgency, priority, recency, and line number
 -- - Due date parsing (📅 YYYY-MM-DD, due:: [[YYYY-MM-DD]], etc.)
 -- - Priority levels with emoji indicators (🔺⏫🔼🔽⏬)
 -- - Click to open in Obsidian, submenu to mark done
@@ -20,14 +21,10 @@ local obsidianTodos = {}
 
 local config = {
     vaultPath = os.getenv("HOME") .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
+    vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
-    debounceDelay = 2, -- Prevents multiple scans when saving triggers multiple FSEvents
-    menuLimits = {
-        overdue = 15,   -- max items to show in Overdue
-        today = 15,     -- max items to show in Today
-        thisWeek = 10,  -- max items to show in This Week
-        others = 10     -- max items to show in Other Tasks
-    }
+    debounceDelay = 2,
+    menuLimits = { overdue = 15, today = 15, thisWeek = 10, others = 10 }
 }
 
 -- State persists across refreshes to avoid redundant work
@@ -37,23 +34,122 @@ local cachedTasks = {}
 local lastScanTime = 0
 local fileMtimeCache = {}
 
-function obsidianTodos.scanVault()
-    -- Support both Apple Silicon and Intel Mac installations
-    local rgPath = nil
-    local possiblePaths = {"/opt/homebrew/bin/rg", "/usr/local/bin/rg", "rg"}
-    for _, path in ipairs(possiblePaths) do
-        local handle = io.popen("which " .. path .. " 2>/dev/null")
-        if handle then
-            local result = handle:read("*a"):gsub("\n", "")
-            handle:close()
-            if result ~= "" then
-                rgPath = path
-                break
-            end
+-- Parse a single task from ripgrep output
+local function parseTask(filePath, lineNumber, taskText)
+    local fileName = filePath:match("([^/]+)%.md$") or filePath:match("([^/]+)$")
+    local cleanText = taskText:match("-%s*%[%s*%]%s*(.*)") or taskText
+    cleanText = cleanText:match("^%s*(.-)%s*$") -- Trim whitespace
+
+    local task = {
+        path = filePath,
+        file = fileName,
+        line = lineNumber,
+        text = cleanText,
+        dueDate = nil,
+        priority = 5,
+        urgency = 99,
+        mtime = 0
+    }
+
+    -- Cache file modification times
+    if fileMtimeCache[filePath] == nil then
+        local mattr = hs and hs.fs and hs.fs.attributes(filePath)
+        fileMtimeCache[filePath] = mattr and mattr.modification or 0
+    end
+    task.mtime = fileMtimeCache[filePath]
+    
+    -- Parse due date from various formats
+    local dateStr = task.text:match("📅%s*(%d%d%d%d%-%d%d%-%d%d)") or
+                  task.text:match("due::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
+                  task.text:match("due:%s*(%d%d%d%d%-%d%d%-%d%d)") or
+                  task.text:match("@due%((%d%d%d%d%-%d%d%-%d%d)%)")
+    
+    if dateStr then
+        local y, m, d = dateStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
+        if y and m and d then
+            task.dueDate = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
         end
     end
     
-    if not rgPath then
+    -- Parse priority from emoji indicators
+    local priorityMap = {["🔺"] = 1, ["⏫"] = 2, ["🔼"] = 3, ["🔽"] = 4, ["⏬"] = 5}
+    for emoji, priority in pairs(priorityMap) do
+        if task.text:find(emoji) then
+            task.priority = priority
+            break
+        end
+    end
+    
+    -- Calculate urgency based on due date
+    if task.dueDate then
+        local now = os.time()
+        local today = os.date("%Y-%m-%d")
+        local taskDay = os.date("%Y-%m-%d", task.dueDate)
+        local oneWeekFromNow = now + (7 * 24 * 60 * 60)
+        
+        if task.dueDate < now then
+            task.urgency = 1 -- Overdue
+        elseif taskDay == today then
+            task.urgency = 2 -- Today
+        elseif task.dueDate <= oneWeekFromNow then
+            task.urgency = 3 -- This week
+        else
+            task.urgency = 4 -- Later
+        end
+    end
+    
+    return task
+end
+
+-- Calculate weighted score for task sorting
+local function calculateWeightedScore(task)
+    local score = 0
+    
+    -- 1) Urgency (highest weight: 10000 points per urgency level)
+    score = score + (5 - task.urgency) * 10000
+    
+    -- 2) Priority (second highest weight: 1000 points per priority level)
+    score = score + (6 - task.priority) * 1000
+    
+    -- 3) Recency + Due date (third weight: 100 points)
+    local recencyScore = 0
+    if task.mtime > 0 then
+        local now = os.time()
+        local daysSinceModified = (now - task.mtime) / (24 * 60 * 60)
+        recencyScore = math.max(0, 100 - daysSinceModified)
+    end
+    
+    local dueDateScore = 0
+    if task.dueDate then
+        local now = os.time()
+        local daysUntilDue = (task.dueDate - now) / (24 * 60 * 60)
+        if daysUntilDue < 0 then
+            dueDateScore = 100 + math.abs(daysUntilDue) -- Overdue bonus
+        else
+            dueDateScore = math.max(0, 100 - daysUntilDue)
+        end
+    end
+    
+    score = score + (recencyScore + dueDateScore) * 1
+    
+    -- 4) Line number (lowest weight: 0.01 points per line)
+    score = score + (1000 - task.line) * 0.01
+    
+    return score
+end
+
+function obsidianTodos.scanVault()
+    -- Find ripgrep executable
+    local handle = io.popen("which rg 2>/dev/null")
+    if not handle then
+        print("Error: ripgrep (rg) not found. Install with: brew install ripgrep")
+        return {}
+    end
+    
+    local rgPath = handle:read("*a"):gsub("\n", "")
+    handle:close()
+    
+    if rgPath == "" then
         print("Error: ripgrep (rg) not found. Install with: brew install ripgrep")
         return {}
     end
@@ -72,86 +168,14 @@ function obsidianTodos.scanVault()
     for line in handle:lines() do
         local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
         if filePath and lineNumber and taskText then
-            local fileName = filePath:match("([^/]+)%.md$") or filePath:match("([^/]+)$")
-            local cleanText = taskText:match("-%s*%[%s*%]%s*(.*)") or taskText
-            cleanText = cleanText:match("^%s*(.-)%s*$") -- Users often have trailing spaces
-
-            local task = {
-                path = filePath,
-                file = fileName,
-                line = tonumber(lineNumber),
-                text = cleanText,
-                dueDate = nil,
-                priority = 5,
-                urgency = 99,
-                mtime = 0
-            }
-
-            -- Cache file modification times to approximate task recency
-            if fileMtimeCache[filePath] == nil then
-                local mattr = nil
-                if hs and hs.fs and hs.fs.attributes then
-                    mattr = hs.fs.attributes(filePath)
-                end
-                if mattr and mattr.modification then
-                    fileMtimeCache[filePath] = mattr.modification
-                else
-                    fileMtimeCache[filePath] = 0
-                end
-            end
-            task.mtime = fileMtimeCache[filePath]
-            
-            -- Support multiple date formats since Obsidian plugins vary
-            local dateStr = task.text:match("📅%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                          task.text:match("due::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
-                          task.text:match("due:%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                          task.text:match("@due%((%d%d%d%d%-%d%d%-%d%d)%)")
-            
-            if dateStr then
-                local y, m, d = dateStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
-                if y and m and d then
-                    task.dueDate = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
-                end
-            end
-            
-            -- Emoji priority system: visual cues work better than p1/p2 tags
-            if task.text:find("🔺") then task.priority = 1
-            elseif task.text:find("⏫") then task.priority = 2
-            elseif task.text:find("🔼") then task.priority = 3
-            elseif task.text:find("🔽") then task.priority = 4
-            elseif task.text:find("⏬") then task.priority = 5
-            end
-            
-            -- Urgency drives sort order: overdue tasks need immediate attention
-            if task.dueDate then
-                local now = os.time()
-                local today = os.date("%Y-%m-%d")
-                local taskDay = os.date("%Y-%m-%d", task.dueDate)
-                local oneWeekFromNow = now + (7 * 24 * 60 * 60)
-                
-                if task.dueDate < now then
-                    task.urgency = 1 -- Overdue
-                elseif taskDay == today then
-                    task.urgency = 2 -- Today
-                elseif task.dueDate <= oneWeekFromNow then
-                    task.urgency = 3 -- This week
-                else
-                    task.urgency = 4 -- Later
-                end
-            end
-            
-            table.insert(tasks, task)
+            table.insert(tasks, parseTask(filePath, tonumber(lineNumber), taskText))
         end
     end
     handle:close()
     
-    -- Most urgent tasks bubble to top; within each group show most recent first
+    -- Sort by weighted score (higher score = higher priority)
     table.sort(tasks, function(a, b)
-        if a.urgency ~= b.urgency then return a.urgency < b.urgency end
-        if a.mtime ~= b.mtime then return a.mtime > b.mtime end -- newer files first
-        if a.file == b.file and a.line ~= b.line then return a.line > b.line end -- later lines first
-        if a.dueDate and b.dueDate and a.dueDate ~= b.dueDate then return a.dueDate < b.dueDate end
-        return a.priority < b.priority
+        return calculateWeightedScore(a) > calculateWeightedScore(b)
     end)
     
     return tasks
@@ -204,26 +228,19 @@ function obsidianTodos.buildMenu()
             end
         end
         
-        -- Order matters: most urgent sections appear first
-        if #overdue > 0 then
-            local maxOverdue = (config.menuLimits and config.menuLimits.overdue) or 5
-            obsidianTodos.addMenuSection(menu, "🚨 Overdue (" .. #overdue .. ")", overdue, maxOverdue)
-        end
+        -- Add sections in order of urgency
+        local sections = {
+            {overdue, "🚨 Overdue", config.menuLimits.overdue},
+            {today, "📅 Today", config.menuLimits.today},
+            {thisWeek, "📆 This Week", config.menuLimits.thisWeek},
+            {others, "📋 Other Tasks", config.menuLimits.others}
+        }
         
-        if #today > 0 then
-            local maxToday = (config.menuLimits and config.menuLimits.today) or 5
-            obsidianTodos.addMenuSection(menu, "📅 Today (" .. #today .. ")", today, maxToday)
-        end
-        
-        if #thisWeek > 0 then
-            local maxThisWeek = (config.menuLimits and config.menuLimits.thisWeek) or 3
-            obsidianTodos.addMenuSection(menu, "📆 This Week (" .. #thisWeek .. ")", thisWeek, maxThisWeek)
-        end
-        
-        if #others > 0 then
-            local maxOthers = (config.menuLimits and config.menuLimits.others) or 5
-            local showCount = math.min(#others, maxOthers)
-            obsidianTodos.addMenuSection(menu, "📋 Other Tasks (" .. #others .. ")", others, showCount)
+        for _, section in ipairs(sections) do
+            local tasks, title, limit = section[1], section[2], section[3]
+            if #tasks > 0 then
+                obsidianTodos.addMenuSection(menu, title .. " (" .. #tasks .. ")", tasks, limit)
+            end
         end
     end
     
@@ -245,6 +262,7 @@ function obsidianTodos.buildMenu()
         end
     })
     
+    
     return menu
 end
 
@@ -261,14 +279,9 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
             displayText = displayText:sub(1, 42) .. "..."
         end
         
-        -- Visual priority indicator helps quick scanning
-        local priorityEmoji = ""
-        if task.priority == 1 then priorityEmoji = "🔺"
-        elseif task.priority == 2 then priorityEmoji = "⏫"
-        elseif task.priority == 3 then priorityEmoji = "🔼"
-        elseif task.priority == 4 then priorityEmoji = "🔽"
-        elseif task.priority == 5 then priorityEmoji = "⏬"
-        end
+        -- Visual priority indicator
+        local priorityEmojis = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
+        local priorityEmoji = priorityEmojis[task.priority] or ""
         
         table.insert(menu, {
             title = "   " .. priorityEmoji .. " " .. displayText .. " (" .. task.file .. ")",
@@ -302,39 +315,44 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
     table.insert(menu, { title = "-" })
 end
 
--- Open task in Obsidian at the specific line
+-- Get vault name from config or auto-detect from path
+local function getVaultName()
+    if config.vaultName then
+        return config.vaultName
+    end
+    
+    if config.vaultPath:match("iCloud~md~obsidian") then
+        return config.vaultPath:match("Documents/([^/]+)$") or "Vault"
+    end
+    
+    return config.vaultPath:match("([^/]+)$") or "Vault"
+end
+
+-- Open task in Obsidian with fallback chain
 function obsidianTodos.openTaskInObsidian(task)
-    local vaultName = config.vaultPath:match("([^/]+)$") or "Vault"
-    local relativePath = task.file
+    local vaultName = getVaultName()
+    local fileName = task.file:gsub("%.md$", "") -- Remove .md extension for URIs
     
-    -- Advanced URI plugin enables line-specific navigation
-    local advancedUriUrl = string.format(
-        "obsidian://advanced-uri?vault=%s&filepath=%s&line=%d",
-        hs.http.encodeForQuery(vaultName),
-        hs.http.encodeForQuery(relativePath),
-        task.line
-    )
+    -- Try URI schemes in order of preference
+    local uris = {
+        string.format("obsidian://open?vault=%s&file=%s", 
+                     hs.http.encodeForQuery(vaultName), 
+                     hs.http.encodeForQuery(fileName)),
+        string.format("obsidian://advanced-uri?vault=%s&filepath=%s&line=%d",
+                     hs.http.encodeForQuery(vaultName),
+                     hs.http.encodeForQuery(task.file),
+                     task.line),
+        string.format("obsidian://open?vault=%s", hs.http.encodeForQuery(vaultName))
+    }
     
-    -- Progressive fallbacks ensure task always opens
-    local success = hs.urlevent.openURL(advancedUriUrl)
-    
-    if not success then
-        -- Basic URI works without plugins
-        local basicUrl = string.format(
-            "obsidian://open?vault=%s&file=%s",
-            hs.http.encodeForQuery(vaultName), 
-            hs.http.encodeForQuery(relativePath:gsub("%.md$", "")) -- Obsidian URIs don't want .md
-        )
-        
-        local basicSuccess = hs.urlevent.openURL(basicUrl)
-        
-        if not basicSuccess then
-            -- Direct file open always works as last resort
-            hs.execute('open -a "Obsidian" "' .. task.path .. '"')
+    for _, uri in ipairs(uris) do
+        if hs.urlevent.openURL(uri) then
+            return
         end
     end
     
-    print("Opening " .. task.file)
+    -- Final fallback: direct file open
+    hs.execute('open -a "Obsidian" "' .. task.path .. '"')
 end
 
 -- Mark a task as done by rewriting the file
