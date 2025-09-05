@@ -37,7 +37,12 @@ local fileMtimeCache = {}
 -- Parse a single task from ripgrep output
 local function parseTask(filePath, lineNumber, taskText)
     local fileName = filePath:match("([^/]+)%.md$") or filePath:match("([^/]+)$")
-    local cleanText = taskText:match("-%s*%[%s*%]%s*(.*)") or taskText
+    
+    -- Simple text extraction - remove checkbox part
+    local cleanText = taskText
+    cleanText = cleanText:gsub("-%s*%[%s*%]", "") -- Remove [ ]
+    cleanText = cleanText:gsub("-%s*%[~%]", "") -- Remove [~]
+    cleanText = cleanText:gsub("-%s*%[/%]", "") -- Remove [/]
     cleanText = cleanText:match("^%s*(.-)%s*$") -- Trim whitespace
 
     -- Convert relative path to absolute path
@@ -46,11 +51,20 @@ local function parseTask(filePath, lineNumber, taskText)
         absolutePath = config.vaultPath .. "/" .. filePath:sub(3) -- Remove "./" prefix
     end
 
+    -- Simple status detection
+    local status = " " -- default todo
+    if taskText:find("%[~%]") then
+        status = "~"
+    elseif taskText:find("%[/%]") then
+        status = "/"
+    end
+    
     local task = {
         path = absolutePath,
         file = fileName,
         line = lineNumber,
         text = cleanText,
+        status = status,
         dueDate = nil,
         snoozeUntil = nil,
         priority = 5,
@@ -176,29 +190,36 @@ function obsidianTodos.scanVault()
         return {}
     end
     
-    local cmd = "cd '" .. config.vaultPath .. "' && " .. rgPath .. " --no-heading --with-filename --line-number " ..
-                "--glob '!Archive/**' --glob '!.obsidian/**' --glob '!Templates/**' --glob '!.trash/**' " ..
-                "'^\\s*-\\s*\\[\\s*\\]\\s*.+' . 2>/dev/null"
-    
-    local handle = io.popen(cmd)
-    if not handle then
-        print("Error: Could not execute ripgrep")
-        return {}
-    end
-    
     local tasks = {}
     local now = os.time()
-    for line in handle:lines() do
-        local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
-        if filePath and lineNumber and taskText then
-            local task = parseTask(filePath, tonumber(lineNumber), taskText)
-            -- Hide tasks snoozed into the future
-            if not (task.snoozeUntil and task.snoozeUntil > now) then
-                table.insert(tasks, task)
+    
+    -- Simple patterns for different task types
+    local patterns = {
+        "'^\\s*-\\s*\\[\\s*\\]\\s*.+'",  -- [ ] todo
+        "'^\\s*-\\s*\\[~\\]\\s*.+'",     -- [~] in-progress
+        "'^\\s*-\\s*\\[/\\]\\s*.+'"      -- [/] in-progress
+    }
+    
+    for _, pattern in ipairs(patterns) do
+        local cmd = "cd '" .. config.vaultPath .. "' && " .. rgPath .. " --no-heading --with-filename --line-number " ..
+                    "--glob '!Archive/**' --glob '!.obsidian/**' --glob '!Templates/**' --glob '!.trash/**' " ..
+                    pattern .. " . 2>/dev/null"
+        
+        local handle = io.popen(cmd)
+        if handle then
+            for line in handle:lines() do
+                local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
+                if filePath and lineNumber and taskText then
+                    local task = parseTask(filePath, tonumber(lineNumber), taskText)
+                    -- Hide tasks snoozed into the future
+                    if not (task.snoozeUntil and task.snoozeUntil > now) then
+                        table.insert(tasks, task)
+                    end
+                end
             end
+            handle:close()
         end
     end
-    handle:close()
     
     -- Sort by weighted score (higher score = higher priority)
     table.sort(tasks, function(a, b)
@@ -309,8 +330,14 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
         local priorityEmojis = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
         local priorityEmoji = priorityEmojis[task.priority] or ""
         
+        -- Add in-progress indicator
+        local statusEmoji = ""
+        if task.status == "~" or task.status == "/" then
+            statusEmoji = "⏳ "
+        end
+        
         table.insert(menu, {
-            title = "   " .. priorityEmoji .. " " .. displayText .. " (" .. task.file .. ")",
+            title = "   " .. statusEmoji .. priorityEmoji .. " " .. displayText .. " (" .. task.file .. ")",
             fn = function()
                 obsidianTodos.openTaskInObsidian(task)
             end,
