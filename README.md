@@ -7,9 +7,10 @@ A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidia
 - **⚡ Fast ripgrep scanning** - Single-pass vault scanning with built-in ignore patterns
 - **📅 Smart due date parsing** - Supports multiple formats (`📅 2024-03-15`, `due:: [[2024-03-15]]`, etc.)
 - **🔺 Priority recognition** - Visual priority levels with emoji indicators  
+- **⏳ In-progress task support** - Shows both todo `[ ]` and in-progress `[~]`/`[/]` tasks
 - **📊 Smart grouping** - Tasks organized by Overdue, Today, This Week, Others
 - **🕒 Recent-first ordering** - Within each group, newer tasks appear first
-- **🎯 Direct interaction** - Click to open in Obsidian, submenu to mark done
+- **🎯 Direct interaction** - Click to open in Obsidian, submenu to mark done/in-progress
 - **⚡ Instant updates** - File watcher triggers immediate menubar refresh
 - **🔇 Quiet operation** - No popup alerts, console logging only
 
@@ -40,16 +41,26 @@ Write tasks in your Obsidian notes using standard markdown:
 
 ```markdown
 - [ ] Basic task
+- [~] In-progress task (shows ⏳ hourglass)
+- [/] Also in-progress (shows ⏳ hourglass)
 - [ ] High priority task 🔺
 - [ ] Task with due date 📅 2024-03-15
 - [ ] Both priority and date ⏫ 📅 2024-03-15
 - [ ] Dataview format due:: [[2024-03-15]]
+- [~] In-progress with snooze 🛫 2024-03-20
 ```
 
 ### Menubar Interaction
 - **Badge number**: Shows overdue + today's task count
 - **Click task**: Opens the task in Obsidian
-- **Hover over task**: Reveals submenu with "Mark as Done" and "Copy Text"
+- **⏳ Hourglass icon**: Indicates in-progress tasks (`[~]` or `[/]`)
+- **Hover over task**: Reveals submenu with actions:
+  - ✅ Mark as Done
+  - ⏳ Mark In Progress  
+  - ❌ Mark Cancelled
+  - 📆 Due Tomorrow
+  - 📆 Due This Week
+  - 🛫 Snooze 1 Week
 - **🔄 Refresh**: Manual refresh (auto-refresh via file watcher)
 - **📂 Open Vault**: Opens vault folder in Finder
 
@@ -104,7 +115,7 @@ If you see "N more items" in a section, increase the limits in `menuLimits` in `
 
 ### Tasks not appearing
 1. Check vault path in config
-2. Ensure tasks use format: `- [ ] Task text`
+2. Ensure tasks use supported formats: `- [ ]`, `- [~]`, or `- [/]`
 3. Verify ripgrep is installed: `which rg`
 
 ### File watcher not working
