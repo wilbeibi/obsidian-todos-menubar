@@ -222,11 +222,11 @@ function obsidianTodos.scanVault()
     local tasks = {}
     local now = os.time()
     
-    -- Simple patterns for different task types
+    -- Simple patterns for different task types we show
+    -- Note: Cancelled tasks `[/]` are recognized but not displayed in the menu
     local patterns = {
         "'^\\s*-\\s*\\[\\s*\\]\\s*.+'",  -- [ ] todo
-        "'^\\s*-\\s*\\[~\\]\\s*.+'",     -- [~] in-progress
-        "'^\\s*-\\s*\\[/\\]\\s*.+'"      -- [/] in-progress
+        "'^\\s*-\\s*\\[~\\]\\s*.+'"       -- [~] in-progress
     }
     
     for _, pattern in ipairs(patterns) do
@@ -359,9 +359,9 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
         local priorityEmojis = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
         local priorityEmoji = priorityEmojis[task.priority] or ""
         
-        -- Add in-progress indicator
+        -- Add in-progress indicator (cancelled tasks are not shown)
         local statusEmoji = ""
-        if task.status == "~" or task.status == "/" then
+        if task.status == "~" then
             statusEmoji = "⏳ "
         end
         
@@ -506,8 +506,14 @@ local function updateTaskStatus(task, bracket, emoji)
     local lineNum = 1
     for line in file:lines() do
         if lineNum == task.line then
-            local newText = line:gsub("%[ %]", "[" .. bracket .. "]")
-            if not newText:find(emoji) then
+            -- Replace the first checkbox at line start regardless of current status
+            local pattern = "^(%s*%-%s*)%b[]"
+            local newText, count = line:gsub(pattern, "%1[" .. bracket .. "]", 1)
+            if count == 0 then
+                -- Fallback: replace any bracket occurrence
+                newText = line:gsub("%b[]", "[" .. bracket .. "]", 1)
+            end
+            if not newText:find(emoji, 1, true) then
                 newText = newText .. " " .. emoji .. " " .. os.date("%Y-%m-%d")
             end
             table.insert(lines, newText)
@@ -545,7 +551,7 @@ end
 
 -- Mark a task as Cancelled by rewriting the file
 function obsidianTodos.markTaskCancelled(task)
-    updateTaskStatus(task, "!", "❌")
+    updateTaskStatus(task, "/", "❌")
 end
 
 -- Helper to set or update a task's due date by day offset

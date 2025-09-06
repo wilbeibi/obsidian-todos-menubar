@@ -7,7 +7,7 @@ A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidia
 - **⚡ Fast ripgrep scanning** - Single-pass vault scanning with built-in ignore patterns
 - **📅 Smart due date parsing** - Supports multiple formats (`📅 2024-03-15`, `due:: [[2024-03-15]]`, etc.)
 - **🔺 Priority recognition** - Visual priority levels with emoji indicators  
-- **⏳ In-progress task support** - Shows both todo `[ ]` and in-progress `[~]`/`[/]` tasks
+- **⏳ In-progress task support** - Shows both todo `[ ]` and in-progress `[~]` tasks; recognizes cancelled `[/]`
 - **📊 Smart grouping** - Tasks organized by Overdue, Today, This Week, Others
 - **🕒 Recent-first ordering** - Within each group, newer tasks appear first
 - **🎯 Direct interaction** - Click to open in Obsidian, submenu to mark done/in-progress
@@ -42,7 +42,7 @@ Write tasks in your Obsidian notes using standard markdown:
 ```markdown
 - [ ] Basic task
 - [~] In-progress task (shows ⏳ hourglass)
-- [/] Also in-progress (shows ⏳ hourglass)
+- [/] Cancelled task (hidden in menu)
 - [ ] High priority task 🔺
 - [ ] Task with due date 📅 2024-03-15
 - [ ] Both priority and date ⏫ 📅 2024-03-15
@@ -53,7 +53,7 @@ Write tasks in your Obsidian notes using standard markdown:
 ### Menubar Interaction
 - **Badge number**: Shows overdue + today's task count
 - **Click task**: Opens the task in Obsidian
-- **⏳ Hourglass icon**: Indicates in-progress tasks (`[~]` or `[/]`)
+- **⏳ Hourglass icon**: Indicates in-progress tasks (`[~]`)
 - **Hover over task**: Reveals submenu with actions:
   - ✅ Mark as Done
   - ⏳ Mark In Progress  
@@ -116,7 +116,7 @@ If you see "N more items" in a section, increase the limits in `menuLimits` in `
 
 ### Tasks not appearing
 1. Check vault path in config
-2. Ensure tasks use supported formats: `- [ ]`, `- [~]`, or `- [/]`
+2. Ensure tasks use supported formats: `- [ ]`, `- [~]` (in progress), or `- [/]` (cancelled)
 3. Verify ripgrep is installed: `which rg`
 
 ### File watcher not working
