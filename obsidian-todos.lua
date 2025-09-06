@@ -19,13 +19,42 @@
 
 local obsidianTodos = {}
 
+-- Resolve the vault path with overrides in this order:
+-- 1) hs.settings.get('obsidianTodos.vaultPath')
+-- 2) Environment variables OBSIDIAN_TODOS_VAULT or OBSIDIAN_VAULT_PATH
+-- 3) Default iCloud Obsidian path
+local function resolveVaultPath()
+    local defaultPath = (os.getenv("HOME") or "") .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault"
+
+    local settingsPath = nil
+    if hs and hs.settings and type(hs.settings.get) == "function" then
+        settingsPath = hs.settings.get('obsidianTodos.vaultPath')
+    end
+
+    local envPath = os.getenv('OBSIDIAN_TODOS_VAULT') or os.getenv('OBSIDIAN_VAULT_PATH')
+    local path = settingsPath or envPath or defaultPath
+
+    -- Expand ~ if present
+    if type(path) == 'string' and path:sub(1,1) == '~' then
+        path = (os.getenv('HOME') or '') .. path:sub(2)
+    end
+
+    return path
+end
+
 local config = {
-    vaultPath = os.getenv("HOME") .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
+    vaultPath = resolveVaultPath(),
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
     menuLimits = { overdue = 15, today = 15, thisWeek = 10, others = 10 }
 }
+
+-- Check whether the configured vault path exists and is a directory
+local function vaultPathExists()
+    local attr = hs and hs.fs and hs.fs.attributes(config.vaultPath)
+    return attr and attr.mode == 'directory'
+end
 
 -- State persists across refreshes to avoid redundant work
 local menubar = nil
@@ -598,6 +627,25 @@ function obsidianTodos.init()
         print("Failed to create Obsidian TODOs menubar")
         return
     end
+
+    -- Validate vault path before wiring the watcher
+    if not vaultPathExists() then
+        print("[Obsidian TODOs] vaultPath does not exist: " .. tostring(config.vaultPath))
+        print("Configure via: hs.settings.set('obsidianTodos.vaultPath','/absolute/path/to/YourVault'); hs.reload()")
+
+        menubar:setTitle(config.menubarTitle .. " !")
+        menubar:setMenu({
+            { title = "Vault path not found", disabled = true },
+            { title = tostring(config.vaultPath), disabled = true },
+            { title = "-" },
+            { title = "Set with hs.settings in Console", disabled = true },
+            { title = "hs.settings.set('obsidianTodos.vaultPath', '/path')", disabled = true },
+            { title = "-" },
+            { title = "Reload", fn = function() hs.reload() end }
+        })
+        return
+    end
+
     -- Build menu on-demand to avoid closing an open menu during refresh
     menubar:setMenu(function()
         return obsidianTodos.buildMenu()

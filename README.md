@@ -79,27 +79,28 @@ Write tasks in your Obsidian notes using standard markdown:
 
 ## Configuration
 
-Edit the config section at the top of `obsidian-todos.lua`:
+The script uses a simple precedence to choose your Obsidian vault path:
 
-```lua
-local config = {
-    vaultPath = os.getenv("HOME") .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
-    menubarTitle = "☑︎",
-    debounceDelay = 2, -- seconds to wait after file changes
-    menuLimits = {
-        overdue = 15,   -- items shown in Overdue
-        today = 15,     -- items shown in Today
-        thisWeek = 10,  -- items shown in This Week
-        others = 10     -- items shown in Other Tasks
-    }
-}
-```
+1) `hs.settings`: `hs.settings.get('obsidianTodos.vaultPath')`
+2) Environment vars: `OBSIDIAN_TODOS_VAULT` or `OBSIDIAN_VAULT_PATH`
+3) Default: `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault`
 
-### Auto-Detection
-The script will automatically find your vault if it's in common locations:
-- `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault` (iCloud)
-- `~/Documents/Obsidian Vault`
-- `~/Documents/Vault`
+Pick any one of these methods:
+
+- Hammerspoon Console (recommended):
+  - Run: `hs.settings.set('obsidianTodos.vaultPath', '/absolute/path/to/YourVault')`
+  - Then reload: `hs.reload()`
+
+- Environment variable (set before Hammerspoon launches):
+  - `export OBSIDIAN_TODOS_VAULT="/absolute/path/to/YourVault"`
+  - Note: GUI apps on macOS don’t always inherit shell env; using `hs.settings` is more reliable.
+
+- Edit the script directly:
+  - Open `~/.hammerspoon/obsidian-todos.lua`
+  - Set `config.vaultPath` at the top to your vault folder
+
+### Missing Path Warning
+If the configured `vaultPath` does not exist, the menubar shows a warning menu and logs guidance in the Hammerspoon console. Set the path via `hs.settings.set('obsidianTodos.vaultPath', '/absolute/path/to/YourVault')` and run `hs.reload()`.
 
 ## Performance
 
