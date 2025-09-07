@@ -26,7 +26,7 @@ A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidia
 
 ### One-line install:
 ```bash
-curl -L https://raw.githubusercontent.com/yourusername/obsidian-todos-menubar/main/obsidian-todos.lua -o ~/.hammerspoon/obsidian-todos.lua
+curl -L https://raw.githubusercontent.com/wilbeibi/obsidian-todos-menubar/main/obsidian-todos.lua -o ~/.hammerspoon/obsidian-todos.lua
 ```
 
 ### Manual install:
