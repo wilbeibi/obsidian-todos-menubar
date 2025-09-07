@@ -1,5 +1,7 @@
 # Obsidian TODOs Menubar
 
+[![Version](https://img.shields.io/badge/version-1.0-blue)](#)
+
 A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidian tasks with due dates and priorities. Click tasks to open them in Obsidian, or use the submenu to mark them done directly from the menubar.
 
 ## Features
