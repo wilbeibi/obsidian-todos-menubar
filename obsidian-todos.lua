@@ -1,4 +1,4 @@
--- Obsidian TODOs Menubar v1.1.0
+-- Obsidian TODOs Menubar v1.1.1
 -- A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidian tasks.
 -- 
 -- Features:
@@ -70,8 +70,9 @@ local function parseTask(filePath, lineNumber, taskText)
     -- Simple text extraction - remove checkbox part
     local cleanText = taskText
     cleanText = cleanText:gsub("-%s*%[%s*%]", "") -- Remove [ ]
-    cleanText = cleanText:gsub("-%s*%[~%]", "") -- Remove [~]
     cleanText = cleanText:gsub("-%s*%[/%]", "") -- Remove [/]
+    cleanText = cleanText:gsub("-%s*%[%-%]", "") -- Remove [-]
+    cleanText = cleanText:gsub("-%s*%[[xX]%]", "") -- Remove [x]
     cleanText = cleanText:match("^%s*(.-)%s*$") -- Trim whitespace
 
     -- Convert relative path to absolute path
@@ -82,10 +83,12 @@ local function parseTask(filePath, lineNumber, taskText)
 
     -- Simple status detection
     local status = " " -- default todo
-    if taskText:find("%[~%]") then
-        status = "~"
-    elseif taskText:find("%[/%]") then
-        status = "/"
+    if taskText:find("%[/%]") then
+        status = "/" -- in progress
+    elseif taskText:find("%[%-%]") then
+        status = "-" -- cancelled
+    elseif taskText:find("%[[xX]%]") then
+        status = "x" -- done
     end
     
     local task = {
@@ -98,7 +101,8 @@ local function parseTask(filePath, lineNumber, taskText)
         snoozeUntil = nil,
         priority = 5,
         urgency = 99,
-        mtime = 0
+        mtime = 0,
+        completedAt = 0
     }
 
     -- Cache file modification times
@@ -154,6 +158,23 @@ local function parseTask(filePath, lineNumber, taskText)
             task.urgency = 3 -- This week
         else
             task.urgency = 4 -- Later
+        end
+    end
+    
+    -- Parse completion date if marked done
+    if status == "x" then
+        local doneStr = task.text:match("✅%s*(%d%d%d%d%-%d%d%-%d%d)") or
+                        task.text:match("done::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
+                        task.text:match("done:%s*(%d%d%d%d%-%d%d%-%d%d)") or
+                        task.text:match("@done%((%d%d%d%d%-%d%d%-%d%d)%)")
+        if doneStr then
+            local y, m, d = doneStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
+            if y and m and d then
+                task.completedAt = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
+            end
+        end
+        if task.completedAt == 0 then
+            task.completedAt = task.mtime
         end
     end
     
@@ -223,10 +244,11 @@ function obsidianTodos.scanVault()
     local now = os.time()
     
     -- Simple patterns for different task types we show
-    -- Note: Cancelled tasks `[/]` are recognized but not displayed in the menu
+    -- Note: Cancelled tasks `[-]` are recognized but not displayed in the menu
     local patterns = {
         "'^\\s*-\\s*\\[\\s*\\]\\s*.+'",  -- [ ] todo
-        "'^\\s*-\\s*\\[~\\]\\s*.+'"       -- [~] in-progress
+        "'^\\s*-\\s*\\[/\\]\\s*.+'",      -- [/] in-progress
+        "'^\\s*-\\s*\\[[xX]\\]\\s*.+'"   -- [x] done
     }
     
     for _, pattern in ipairs(patterns) do
@@ -264,17 +286,21 @@ function obsidianTodos.updateMenu()
     -- Badge shows urgent count: users need to know what can't wait
     local overdueCount = 0
     local todayCount = 0
+    local pendingCount = 0
     for _, task in ipairs(cachedTasks) do
-        if task.urgency == 1 then overdueCount = overdueCount + 1 end
-        if task.urgency == 2 then todayCount = todayCount + 1 end
+        if task.status ~= 'x' then
+            pendingCount = pendingCount + 1
+            if task.urgency == 1 then overdueCount = overdueCount + 1 end
+            if task.urgency == 2 then todayCount = todayCount + 1 end
+        end
     end
     
     -- Urgent tasks get priority in badge to create urgency awareness
     local badge = ""
     if (overdueCount + todayCount) > 0 then
         badge = " " .. (overdueCount + todayCount)
-    elseif #cachedTasks > 0 then
-        badge = " " .. #cachedTasks
+    elseif pendingCount > 0 then
+        badge = " " .. pendingCount
     end
     
     menubar:setTitle(config.menubarTitle .. badge)
@@ -290,10 +316,12 @@ function obsidianTodos.buildMenu()
         table.insert(menu, {title = "No pending tasks found!", disabled = true})
     else
         -- Separate buckets prevent overdue tasks from getting buried
-        local overdue, today, thisWeek, others = {}, {}, {}, {}
+        local overdue, today, thisWeek, others, doneTasks = {}, {}, {}, {}, {}
         
         for _, task in ipairs(cachedTasks) do
-            if task.urgency == 1 then
+            if task.status == 'x' then
+                table.insert(doneTasks, task)
+            elseif task.urgency == 1 then
                 table.insert(overdue, task)
             elseif task.urgency == 2 then
                 table.insert(today, task)
@@ -317,6 +345,14 @@ function obsidianTodos.buildMenu()
             if #tasks > 0 then
                 obsidianTodos.addMenuSection(menu, title .. " (" .. #tasks .. ")", tasks, limit)
             end
+        end
+
+        -- Recently completed tasks (latest 2)
+        if #doneTasks > 0 then
+            table.sort(doneTasks, function(a, b)
+                return (a.completedAt or 0) > (b.completedAt or 0)
+            end)
+            obsidianTodos.addMenuSection(menu, "✅ Done (latest 2)", doneTasks, 2)
         end
     end
     
@@ -361,8 +397,10 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
         
         -- Add in-progress indicator (cancelled tasks are not shown)
         local statusEmoji = ""
-        if task.status == "~" then
+        if task.status == "/" then
             statusEmoji = "⏳ "
+        elseif task.status == "x" then
+            statusEmoji = "✅ "
         end
         
         table.insert(menu, {
@@ -546,12 +584,12 @@ end
 
 -- Mark a task as In Progress by rewriting the file
 function obsidianTodos.markTaskInProgress(task)
-    updateTaskStatus(task, "~", "⏳")
+    updateTaskStatus(task, "/", "⏳")
 end
 
 -- Mark a task as Cancelled by rewriting the file
 function obsidianTodos.markTaskCancelled(task)
-    updateTaskStatus(task, "/", "❌")
+    updateTaskStatus(task, "-", "❌")
 end
 
 -- Helper to set or update a task's due date by day offset

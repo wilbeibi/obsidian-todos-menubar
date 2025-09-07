@@ -7,8 +7,9 @@ A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidia
 - **⚡ Fast ripgrep scanning** - Single-pass vault scanning with built-in ignore patterns
 - **📅 Smart due date parsing** - Supports multiple formats (`📅 2024-03-15`, `due:: [[2024-03-15]]`, etc.)
 - **🔺 Priority recognition** - Visual priority levels with emoji indicators  
-- **⏳ In-progress task support** - Shows both todo `[ ]` and in-progress `[~]` tasks; recognizes cancelled `[/]`
+- **⏳ In-progress task support** - Shows both todo `[ ]` and in-progress `[/]` tasks; recognizes cancelled `[-]`
 - **📊 Smart grouping** - Tasks organized by Overdue, Today, This Week, Others
+- **✅ Recently done preview** - Shows the latest 2 completed tasks
 - **🕒 Recent-first ordering** - Within each group, newer tasks appear first
 - **🎯 Direct interaction** - Click to open in Obsidian, submenu to mark done/in-progress
 - **⚡ Instant updates** - File watcher triggers immediate menubar refresh
@@ -41,19 +42,19 @@ Write tasks in your Obsidian notes using standard markdown:
 
 ```markdown
 - [ ] Basic task
-- [~] In-progress task (shows ⏳ hourglass)
-- [/] Cancelled task (hidden in menu)
+- [/] In-progress task (shows ⏳ hourglass)
+- [-] Cancelled task (hidden in menu)
 - [ ] High priority task 🔺
 - [ ] Task with due date 📅 2024-03-15
 - [ ] Both priority and date ⏫ 📅 2024-03-15
 - [ ] Dataview format due:: [[2024-03-15]]
-- [~] In-progress with snooze 🛫 2024-03-20
+- [/] In-progress with snooze 🛫 2024-03-20
 ```
 
 ### Menubar Interaction
 - **Badge number**: Shows overdue + today's task count
 - **Click task**: Opens the task in Obsidian
-- **⏳ Hourglass icon**: Indicates in-progress tasks (`[~]`)
+- **⏳ Hourglass icon**: Indicates in-progress tasks (`[/]`)
 - **Hover over task**: Reveals submenu with actions:
   - ✅ Mark as Done
   - ⏳ Mark In Progress  
@@ -63,6 +64,7 @@ Write tasks in your Obsidian notes using standard markdown:
   - 🛫 Snooze 1 Week
 - **🔄 Refresh**: Manual refresh (auto-refresh via file watcher)
 - **📂 Open Vault**: Opens vault folder in Finder
+- **✅ Done (latest 2)**: Shows the two most recently completed tasks
 
 ### Supported Due Date Formats
 - `📅 YYYY-MM-DD`
@@ -116,7 +118,7 @@ If you see "N more items" in a section, increase the limits in `menuLimits` in `
 
 ### Tasks not appearing
 1. Check vault path in config
-2. Ensure tasks use supported formats: `- [ ]`, `- [~]` (in progress), or `- [/]` (cancelled)
+2. Ensure tasks use supported formats: `- [ ]`, `- [/]` (in progress), or `- [-]` (cancelled)
 3. Verify ripgrep is installed: `which rg`
 
 ### File watcher not working
