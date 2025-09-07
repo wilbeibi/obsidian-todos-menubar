@@ -103,6 +103,34 @@ Pick any one of these methods:
   - Open `~/.hammerspoon/obsidian-todos.lua`
   - Set `config.vaultPath` at the top to your vault folder
 
+### Set Vault Path (Examples)
+
+- Dropbox vault (recommended via `hs.settings`):
+  - `hs.settings.set('obsidianTodos.vaultPath', '/Users/yourname/Library/CloudStorage/Dropbox/ObsidianVaults/Vault')`
+  - `hs.reload()`
+
+- Example `~/.hammerspoon/init.lua` when using this repo folder directly:
+  ```lua
+  -- Set before require so the script reads it during init
+  hs.settings.set('obsidianTodos.vaultPath', '/Users/yourname/Library/CloudStorage/Dropbox/ObsidianVaults/Vault')
+  require('obsidian-todos-menubar.obsidian-todos')
+  ```
+
+- Example `~/.hammerspoon/init.lua` when you installed the single file to `~/.hammerspoon/`:
+  ```lua
+  hs.settings.set('obsidianTodos.vaultPath', '/Users/yourname/Library/CloudStorage/Dropbox/ObsidianVaults/Vault')
+  require('obsidian-todos')
+  ```
+
+- Verify in Hammerspoon Console:
+  - `hs.settings.get('obsidianTodos.vaultPath')`
+  - Click the menubar → "📂 Open Vault Folder" and confirm it opens your vault
+
+Notes:
+- The default path targets iCloud Obsidian (`~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault`). If your vault is in Dropbox or elsewhere, set `obsidianTodos.vaultPath` explicitly as above.
+- GUI apps on macOS don’t always inherit shell env; prefer `hs.settings` over environment variables.
+- Hammerspoon may need Full Disk Access to scan your vault.
+
 ### Missing Path Warning
 If the configured `vaultPath` does not exist, the menubar shows a warning menu and logs guidance in the Hammerspoon console. Set the path via `hs.settings.set('obsidianTodos.vaultPath', '/absolute/path/to/YourVault')` and run `hs.reload()`.
 
