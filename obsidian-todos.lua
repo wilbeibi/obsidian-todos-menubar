@@ -1,4 +1,4 @@
--- Obsidian TODOs Menubar v1.1.1
+-- Obsidian TODOs Menubar v1.0
 -- A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidian tasks.
 -- 
 -- Features:
