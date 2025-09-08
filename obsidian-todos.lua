@@ -288,29 +288,23 @@ end
 function obsidianTodos.updateMenu()
     cachedTasks = obsidianTodos.scanVault()
     
-    -- Badge shows urgent count: users need to know what can't wait
-    local overdueCount = 0
-    local todayCount = 0
-    local pendingCount = 0
+    -- Count tasks for the current week (overdue, today, this week)
+    local weekCount = 0
     for _, task in ipairs(cachedTasks) do
-        if task.status ~= 'x' then
-            pendingCount = pendingCount + 1
-            if task.urgency == 1 then overdueCount = overdueCount + 1 end
-            if task.urgency == 2 then todayCount = todayCount + 1 end
+        if task.status ~= 'x' and (task.urgency == 1 or task.urgency == 2 or task.urgency == 3) then
+            weekCount = weekCount + 1
         end
     end
     
-    -- Urgent tasks get priority in badge to create urgency awareness
+    -- Badge shows this week's task count
     local badge = ""
-    if (overdueCount + todayCount) > 0 then
-        badge = " " .. (overdueCount + todayCount)
-    elseif pendingCount > 0 then
-        badge = " " .. pendingCount
+    if weekCount > 0 then
+        badge = " " .. weekCount
     end
     
     menubar:setTitle(config.menubarTitle .. badge)
     
-    print("Refreshed - found " .. #cachedTasks .. " tasks")
+    print("Refreshed - found " .. #cachedTasks .. " tasks (" .. weekCount .. " this week)")
 end
 
 -- Build menu structure
