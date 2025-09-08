@@ -147,18 +147,23 @@ local function parseTask(filePath, lineNumber, taskText)
     if task.dueDate then
         local now = os.time()
         local today = os.date("%Y-%m-%d")
+        local tomorrow = os.date("%Y-%m-%d", now + 24 * 60 * 60)
         local taskDay = os.date("%Y-%m-%d", task.dueDate)
-        local oneWeekFromNow = now + (7 * 24 * 60 * 60)
+        -- Calculate one week from end of today to include full 7 days
+        local oneWeekFromEndOfToday = os.time({year=os.date("%Y"), month=os.date("%m"), day=os.date("%d"), hour=23, min=59, sec=59}) + (7 * 24 * 60 * 60)
         
         if task.dueDate < now then
             task.urgency = 1 -- Overdue
         elseif taskDay == today then
             task.urgency = 2 -- Today
-        elseif task.dueDate <= oneWeekFromNow then
+        elseif taskDay == tomorrow then
+            task.urgency = 3 -- Tomorrow
+        elseif task.dueDate <= oneWeekFromEndOfToday then
             task.urgency = 3 -- This week
         else
             task.urgency = 4 -- Later
         end
+        
     end
     
     -- Parse completion date if marked done
@@ -331,6 +336,7 @@ function obsidianTodos.buildMenu()
                 table.insert(others, task)
             end
         end
+        
         
         -- Add sections in order of urgency
         local sections = {
