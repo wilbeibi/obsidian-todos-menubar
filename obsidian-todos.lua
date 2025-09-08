@@ -70,6 +70,53 @@ local cachedTasks = {}
 local lastScanTime = 0
 -- mtime cache removed to avoid stale recency sorting after edits
 
+-- Shared small utilities
+local function refreshSoon(delaySec)
+    hs.timer.doAfter(delaySec or 0.5, function()
+        lastScanTime = 0
+        obsidianTodos.updateMenu()
+    end)
+end
+
+-- Constant mapping for rendering
+local PRIORITY_EMOJIS = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
+
+local function updateSingleLine(filePath, lineNumber, transformFn)
+    local file = io.open(filePath, "r")
+    if not file then
+        print("Error: Could not open file: " .. tostring(filePath))
+        return false
+    end
+    local lines = {}
+    local ln = 1
+    for line in file:lines() do
+        if ln == lineNumber then
+            local ok, newLine = pcall(transformFn, line)
+            if not ok then
+                newLine = line
+            end
+            table.insert(lines, newLine)
+        else
+            table.insert(lines, line)
+        end
+        ln = ln + 1
+    end
+    file:close()
+
+    file = io.open(filePath, "w")
+    if not file then
+        print("Error: Could not write to file: " .. tostring(filePath))
+        return false
+    end
+    for _, l in ipairs(lines) do file:write(l .. "\n") end
+    file:close()
+    return true
+end
+
+local function isIgnoredPath(p)
+    return p:find("/%.obsidian/") or p:find("/Archive/") or p:find("/Templates/") or p:find("/%.trash/")
+end
+
 -- Parse a single task from ripgrep output
 local function parseTask(filePath, lineNumber, taskText)
     -- Normalize vault-relative and absolute paths
@@ -410,8 +457,7 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
         end
         
         -- Visual priority indicator
-        local priorityEmojis = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
-        local priorityEmoji = priorityEmojis[task.priority] or ""
+        local priorityEmoji = PRIORITY_EMOJIS[task.priority] or ""
         
         -- Add in-progress indicator (cancelled tasks are not shown)
         local statusEmoji = ""
@@ -468,46 +514,18 @@ end
 
 -- Snooze a task by adding/updating 🛫 YYYY-MM-DD (7 days out)
 function obsidianTodos.markTaskSnoozeOneWeek(task)
-    local filePath = task.path
-    local file = io.open(filePath, "r")
-    if not file then
-        print("Error: Could not open file to snooze task: " .. filePath)
-        return
-    end
-
     local targetDate = os.date("%Y-%m-%d", os.time() + 7 * 24 * 60 * 60)
-    local lines = {}
-    local lineNum = 1
-
-    for line in file:lines() do
-        if lineNum == task.line then
-            local newLine = line
-            local tmp, count = newLine:gsub("🛫%s*%d%d%d%d%-%d%d%-%d%d", "🛫 " .. targetDate)
-            if count == 0 then
-                newLine = newLine .. " 🛫 " .. targetDate
-            else
-                newLine = tmp
-            end
-            table.insert(lines, newLine)
+    local ok = updateSingleLine(task.path, task.line, function(line)
+        local newLine = line
+        local tmp, count = newLine:gsub("🛫%s*%d%d%d%d%-%d%d%-%d%d", "🛫 " .. targetDate)
+        if count == 0 then
+            newLine = newLine .. " 🛫 " .. targetDate
         else
-            table.insert(lines, line)
+            newLine = tmp
         end
-        lineNum = lineNum + 1
-    end
-    file:close()
-
-    file = io.open(filePath, "w")
-    if not file then
-        print("Error: Could not write to file: " .. filePath)
-        return
-    end
-    for _, l in ipairs(lines) do file:write(l .. "\n") end
-    file:close()
-
-    hs.timer.doAfter(0.5, function()
-        lastScanTime = 0
-        obsidianTodos.updateMenu()
+        return newLine
     end)
+    if ok then refreshSoon(0.5) end
 end
 
 -- Get vault name from config or auto-detect from path
@@ -523,79 +541,50 @@ local function getVaultName()
     return config.vaultPath:match("([^/]+)$") or "Vault"
 end
 
+-- Detect if the Advanced URI plugin is installed in this vault
+local function hasAdvancedURIPlugin()
+    local pluginPath = (config.vaultPath or "") .. "/.obsidian/plugins/obsidian-advanced-uri"
+    local attr = hs and hs.fs and hs.fs.attributes(pluginPath)
+    return attr and attr.mode == 'directory'
+end
+
 -- Open task in Obsidian with fallback chain
 function obsidianTodos.openTaskInObsidian(task)
+    local q = function(s) return hs.http.encodeForQuery(s or "") end
     local vaultName = getVaultName()
-    local relPath = task.relativePath or task.file
-    local relNoExt = relPath:gsub("%.md$", "")
-    
-    -- Try URI schemes in order of preference
-    local uris = {
-        -- Prefer Advanced URI with vault-relative filepath (with extension)
-        string.format("obsidian://advanced-uri?vault=%s&filepath=%s&line=%d",
-                      hs.http.encodeForQuery(vaultName),
-                      hs.http.encodeForQuery(relPath),
-                      task.line),
-        -- Fallback to basic open with vault-relative file (typically without extension)
-        string.format("obsidian://open?vault=%s&file=%s",
-                      hs.http.encodeForQuery(vaultName),
-                      hs.http.encodeForQuery(relNoExt)),
-        string.format("obsidian://open?vault=%s", hs.http.encodeForQuery(vaultName))
-    }
-    
-    for _, uri in ipairs(uris) do
-        if hs.urlevent.openURL(uri) then
-            return
-        end
+    local relPath = task.relativePath or task.file -- prefer vault-relative path with extension
+
+    -- Prefer basic Obsidian URI unless Advanced URI plugin is present
+    if hasAdvancedURIPlugin() then
+        local adv = string.format(
+            "obsidian://advanced-uri?vault=%s&filepath=%s&line=%d",
+            q(vaultName), q(relPath), tonumber(task.line) or 1
+        )
+        if hs.urlevent.openURL(adv) then return end
     end
-    
-    -- Final fallback: direct file open
+
+    local basic = string.format("obsidian://open?vault=%s&file=%s", q(vaultName), q(relPath))
+    if hs.urlevent.openURL(basic) then return end
+
     hs.execute('open -a "Obsidian" ' .. shQuote(task.path))
 end
 
 -- Helper to update a task status (done, in progress, cancelled)
 local function updateTaskStatus(task, bracket, emoji)
-    local filePath = task.path
-    local file = io.open(filePath, "r")
-    if not file then
-        print("Error: Could not open file to update task status: " .. filePath)
-        return
-    end
-    local lines = {}
-    local lineNum = 1
-    for line in file:lines() do
-        if lineNum == task.line then
-            -- Replace the first checkbox at line start regardless of current status
-            local pattern = "^(%s*%-%s*)%b[]"
-            local newText, count = line:gsub(pattern, "%1[" .. bracket .. "]", 1)
-            if count == 0 then
-                -- Fallback: replace any bracket occurrence
-                newText = line:gsub("%b[]", "[" .. bracket .. "]", 1)
-            end
-            if not newText:find(emoji, 1, true) then
-                newText = newText .. " " .. emoji .. " " .. os.date("%Y-%m-%d")
-            end
-            table.insert(lines, newText)
-        else
-            table.insert(lines, line)
+    local ok = updateSingleLine(task.path, task.line, function(line)
+        -- Replace the first checkbox at line start regardless of current status
+        local pattern = "^(%s*%-%s*)%b[]"
+        local newText, count = line:gsub(pattern, "%1[" .. bracket .. "]", 1)
+        if count == 0 then
+            -- Fallback: replace any bracket occurrence
+            newText = line:gsub("%b[]", "[" .. bracket .. "]", 1)
         end
-        lineNum = lineNum + 1
-    end
-    file:close()
-
-    file = io.open(filePath, "w")
-    if not file then
-        print("Error: Could not write to file: " .. filePath)
-        return
-    end
-    for _, l in ipairs(lines) do file:write(l .. "\n") end
-    file:close()
-
-    -- Refresh the menu after a short delay
-    hs.timer.doAfter(0.5, function()
-        lastScanTime = 0
-        obsidianTodos.updateMenu()
+        if not newText:find(emoji, 1, true) then
+            newText = newText .. " " .. emoji .. " " .. os.date("%Y-%m-%d")
+        end
+        return newText
     end)
+    if ok then refreshSoon(0.5) end
 end
 
 -- Mark a task as done by rewriting the file
@@ -615,64 +604,35 @@ end
 
 -- Helper to set or update a task's due date by day offset
 local function setTaskDueByOffset(task, daysOffset)
-    local filePath = task.path
-    local file = io.open(filePath, "r")
-    if not file then
-        print("Error: Could not open file to set due date: " .. filePath)
-        return
-    end
-
     local targetDate = os.date("%Y-%m-%d", os.time() + daysOffset * 24 * 60 * 60)
-    local lines = {}
-    local lineNum = 1
+    local ok = updateSingleLine(task.path, task.line, function(line)
+        local newLine = line
+        local replaced = false
 
-    for line in file:lines() do
-        if lineNum == task.line then
-            local newLine = line
-            local replaced = false
+        -- Replace common due date formats while preserving style
+        local patterns = {
+            {pat = "📅%s*%d%d%d%d%-%d%d%-%d%d", rep = "📅 " .. targetDate},
+            {pat = "due::%s*%[%[%d%d%d%d%-%d%d%-%d%d%]%]", rep = "due:: [[" .. targetDate .. "]]"},
+            {pat = "due:%s*%d%d%d%d%-%d%d%-%d%d", rep = "due: " .. targetDate},
+            {pat = "@due%(%d%d%d%d%-%d%d%-%d%d%)", rep = "@due(" .. targetDate .. ")"}
+        }
 
-            -- Replace common due date formats while preserving style
-            local patterns = {
-                {pat = "📅%s*%d%d%d%d%-%d%d%-%d%d", rep = "📅 " .. targetDate},
-                {pat = "due::%s*%[%[%d%d%d%d%-%d%d%-%d%d%]%]", rep = "due:: [[" .. targetDate .. "]]"},
-                {pat = "due:%s*%d%d%d%d%-%d%d%-%d%d", rep = "due: " .. targetDate},
-                {pat = "@due%(%d%d%d%d%-%d%d%-%d%d%)", rep = "@due(" .. targetDate .. ")"}
-            }
-
-            for _, p in ipairs(patterns) do
-                local tmp, count = newLine:gsub(p.pat, p.rep)
-                if count > 0 then
-                    newLine = tmp
-                    replaced = true
-                end
+        for _, p in ipairs(patterns) do
+            local tmp, count = newLine:gsub(p.pat, p.rep)
+            if count > 0 then
+                newLine = tmp
+                replaced = true
             end
-
-            if not replaced then
-                -- Append a due date if none was present
-                newLine = newLine .. " 📅 " .. targetDate
-            end
-
-            table.insert(lines, newLine)
-        else
-            table.insert(lines, line)
         end
-        lineNum = lineNum + 1
-    end
-    file:close()
 
-    file = io.open(filePath, "w")
-    if not file then
-        print("Error: Could not write to file: " .. filePath)
-        return
-    end
-    for _, l in ipairs(lines) do file:write(l .. "\n") end
-    file:close()
+        if not replaced then
+            -- Append a due date if none was present
+            newLine = newLine .. " 📅 " .. targetDate
+        end
 
-    -- Refresh the menu after a short delay
-    hs.timer.doAfter(0.5, function()
-        lastScanTime = 0
-        obsidianTodos.updateMenu()
+        return newLine
     end)
+    if ok then refreshSoon(0.5) end
 end
 
 -- Set or update a task's due date to tomorrow
@@ -719,20 +679,16 @@ function obsidianTodos.init()
     -- File watcher eliminates polling overhead
     watcher = hs.pathwatcher.new(config.vaultPath, function(paths)
         -- Ignore changes in folders we don't scan to avoid needless refreshes
-        local function isIgnored(p)
-            return p:find("/%.obsidian/") or p:find("/Archive/") or p:find("/Templates/") or p:find("/%.trash/")
-        end
-
         local shouldRefresh = false
         if type(paths) == "table" then
             for _, p in ipairs(paths) do
-                if not isIgnored(p) then
+                if not isIgnoredPath(p) then
                     shouldRefresh = true
                     break
                 end
             end
         else
-            shouldRefresh = not isIgnored(paths or "")
+            shouldRefresh = not isIgnoredPath(paths or "")
         end
 
         if shouldRefresh then
