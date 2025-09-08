@@ -19,6 +19,13 @@
 
 local obsidianTodos = {}
 
+-- Safe shell quoting for single-arg usage (e.g., paths)
+local function shQuote(s)
+    if type(s) ~= 'string' then return "''" end
+    -- Wrap in single quotes and escape internal single quotes: ' -> '\''
+    return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
 -- Resolve the vault path with overrides in this order:
 -- 1) hs.settings.get('obsidianTodos.vaultPath')
 -- 2) Environment variables OBSIDIAN_TODOS_VAULT or OBSIDIAN_VAULT_PATH
@@ -61,11 +68,28 @@ local menubar = nil
 local watcher = nil
 local cachedTasks = {}
 local lastScanTime = 0
-local fileMtimeCache = {}
+-- mtime cache removed to avoid stale recency sorting after edits
 
 -- Parse a single task from ripgrep output
 local function parseTask(filePath, lineNumber, taskText)
-    local fileName = filePath:match("([^/]+)%.md$") or filePath:match("([^/]+)$")
+    -- Normalize vault-relative and absolute paths
+    local vaultPath = config.vaultPath or ''
+    local relPath = filePath
+    if relPath:sub(1, 2) == './' then
+        relPath = relPath:sub(3)
+    elseif relPath:sub(1,1) == '/' then
+        local prefix = vaultPath .. '/'
+        if relPath:sub(1, #prefix) == prefix then
+            relPath = relPath:sub(#prefix + 1)
+        end
+    end
+
+    local absolutePath = relPath
+    if relPath:sub(1,1) ~= '/' then
+        absolutePath = (vaultPath ~= '' and (vaultPath .. '/' .. relPath)) or relPath
+    end
+
+    local fileName = relPath:match("([^/]+)%.md$") or relPath:match("([^/]+)$")
     
     -- Simple text extraction - remove checkbox part
     local cleanText = taskText
@@ -75,11 +99,7 @@ local function parseTask(filePath, lineNumber, taskText)
     cleanText = cleanText:gsub("-%s*%[[xX]%]", "") -- Remove [x]
     cleanText = cleanText:match("^%s*(.-)%s*$") -- Trim whitespace
 
-    -- Convert relative path to absolute path
-    local absolutePath = filePath
-    if filePath:match("^%./") then
-        absolutePath = config.vaultPath .. "/" .. filePath:sub(3) -- Remove "./" prefix
-    end
+    -- Keep both absolute and vault-relative paths
 
     -- Simple status detection
     local status = " " -- default todo
@@ -93,6 +113,7 @@ local function parseTask(filePath, lineNumber, taskText)
     
     local task = {
         path = absolutePath,
+        relativePath = relPath,
         file = fileName,
         line = lineNumber,
         text = cleanText,
@@ -105,12 +126,9 @@ local function parseTask(filePath, lineNumber, taskText)
         completedAt = 0
     }
 
-    -- Cache file modification times
-    if fileMtimeCache[absolutePath] == nil then
-        local mattr = hs and hs.fs and hs.fs.attributes(absolutePath)
-        fileMtimeCache[absolutePath] = mattr and mattr.modification or 0
-    end
-    task.mtime = fileMtimeCache[absolutePath]
+    -- Read file modification time fresh to avoid stale cache
+    local mattr = hs and hs.fs and hs.fs.attributes(absolutePath)
+    task.mtime = mattr and mattr.modification or 0
     
     -- Parse due date from various formats
     local dateStr = task.text:match("📅%s*(%d%d%d%d%-%d%d%-%d%d)") or
@@ -257,7 +275,7 @@ function obsidianTodos.scanVault()
     }
     
     for _, pattern in ipairs(patterns) do
-        local cmd = "cd '" .. config.vaultPath .. "' && " .. rgPath .. " --no-heading --with-filename --line-number " ..
+        local cmd = "cd " .. shQuote(config.vaultPath) .. " && " .. rgPath .. " --no-heading --with-filename --line-number " ..
                     "--glob '!Archive/**' --glob '!.obsidian/**' --glob '!Templates/**' --glob '!.trash/**' " ..
                     pattern .. " . 2>/dev/null"
         
@@ -370,7 +388,7 @@ function obsidianTodos.buildMenu()
     table.insert(menu, {
         title = "📂 Open Vault Folder",
         fn = function()
-            hs.execute('open "' .. config.vaultPath .. '"')
+            hs.execute('open ' .. shQuote(config.vaultPath))
         end
     })
     
@@ -508,17 +526,20 @@ end
 -- Open task in Obsidian with fallback chain
 function obsidianTodos.openTaskInObsidian(task)
     local vaultName = getVaultName()
-    local fileName = task.file:gsub("%.md$", "") -- Remove .md extension for URIs
+    local relPath = task.relativePath or task.file
+    local relNoExt = relPath:gsub("%.md$", "")
     
     -- Try URI schemes in order of preference
     local uris = {
-        string.format("obsidian://open?vault=%s&file=%s", 
-                     hs.http.encodeForQuery(vaultName), 
-                     hs.http.encodeForQuery(fileName)),
+        -- Prefer Advanced URI with vault-relative filepath (with extension)
         string.format("obsidian://advanced-uri?vault=%s&filepath=%s&line=%d",
-                     hs.http.encodeForQuery(vaultName),
-                     hs.http.encodeForQuery(task.file),
-                     task.line),
+                      hs.http.encodeForQuery(vaultName),
+                      hs.http.encodeForQuery(relPath),
+                      task.line),
+        -- Fallback to basic open with vault-relative file (typically without extension)
+        string.format("obsidian://open?vault=%s&file=%s",
+                      hs.http.encodeForQuery(vaultName),
+                      hs.http.encodeForQuery(relNoExt)),
         string.format("obsidian://open?vault=%s", hs.http.encodeForQuery(vaultName))
     }
     
@@ -529,7 +550,7 @@ function obsidianTodos.openTaskInObsidian(task)
     end
     
     -- Final fallback: direct file open
-    hs.execute('open -a "Obsidian" "' .. task.path .. '"')
+    hs.execute('open -a "Obsidian" ' .. shQuote(task.path))
 end
 
 -- Helper to update a task status (done, in progress, cancelled)
