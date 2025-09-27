@@ -18,6 +18,7 @@
 -- License: MIT
 
 local obsidianTodos = {}
+local utf8 = _G.utf8 or require("utf8")
 
 -- Safe shell quoting for single-arg usage (e.g., paths)
 local function shQuote(s)
@@ -54,7 +55,7 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { overdue = 15, today = 15, thisWeek = 10, others = 10 }
+    menuLimits = { overdue = 9, today = 9, thisWeek = 6, others = 6 }
 }
 
 -- Check whether the configured vault path exists and is a directory
@@ -182,7 +183,13 @@ local function parseTask(filePath, lineNumber, taskText)
                   task.text:match("due::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
                   task.text:match("due:%s*(%d%d%d%d%-%d%d%-%d%d)") or
                   task.text:match("@due%((%d%d%d%d%-%d%d%-%d%d)%)")
-    
+
+    if not dateStr then
+        if task.text:find("[Dd]ue") or task.text:find("📅") then
+            dateStr = task.text:match("(%d%d%d%d%-%d%d%-%d%d)")
+        end
+    end
+
     if dateStr then
         local y, m, d = dateStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
         if y and m and d then
@@ -254,38 +261,35 @@ end
 -- Calculate weighted score for task sorting
 local function calculateWeightedScore(task)
     local score = 0
-    
-    -- 1) Urgency (highest weight: 10000 points per urgency level)
-    score = score + (5 - task.urgency) * 10000
-    
-    -- 2) Priority (second highest weight: 1000 points per priority level)
-    score = score + (6 - task.priority) * 1000
-    
-    -- 3) Recency + Due date (third weight: 100 points)
-    local recencyScore = 0
-    if task.mtime > 0 then
-        local now = os.time()
-        local daysSinceModified = (now - task.mtime) / (24 * 60 * 60)
-        recencyScore = math.max(0, 100 - daysSinceModified)
-    end
-    
-    local dueDateScore = 0
+
+    -- bucket: Overdue(1) > Today(2) > ThisWeek(3) > Later(4) > None(5)
+    score = score + (6 - math.min(task.urgency or 5, 5)) * 1000
+
+    -- priority: 1..5
+    score = score + (6 - (task.priority or 5)) * 100
+
+    -- tie: time-to-due (closer is higher), clipped to 30 days; overdue gets a small nudge but not crazy
+    local tieDue = 0
     if task.dueDate then
-        local now = os.time()
-        local daysUntilDue = (task.dueDate - now) / (24 * 60 * 60)
-        if daysUntilDue < 0 then
-            dueDateScore = 100 + math.abs(daysUntilDue) -- Overdue bonus
+        local days = math.floor((task.dueDate - os.time()) / 86400)
+        if days < 0 then
+            tieDue = 40 + math.min(10, math.abs(days))
         else
-            dueDateScore = math.max(0, 100 - daysUntilDue)
+            tieDue = 40 - math.min(30, days)
         end
     end
-    
-    score = score + (recencyScore + dueDateScore) * 1
-    
-    -- 4) Line number (lowest weight: 0.01 points per line)
-    score = score + (1000 - task.line) * 0.01
-    
-    return score
+
+    -- soft recency: only last 7 days matter
+    local recency = 0
+    if task.mtime and task.mtime > 0 then
+        local days = math.floor((os.time() - task.mtime) / 86400)
+        recency = math.max(0, 7 - math.min(7, days))
+    end
+
+    -- tiny preference for earlier lines (stable within a note)
+    local line = 1000 - (task.line or 1000)
+
+    return score + tieDue + recency + (line * 0.01)
 end
 
 function obsidianTodos.scanVault()
@@ -352,24 +356,29 @@ end
 
 function obsidianTodos.updateMenu()
     cachedTasks = obsidianTodos.scanVault()
-    
-    -- Count tasks for the current week (overdue, today, this week)
-    local weekCount = 0
-    for _, task in ipairs(cachedTasks) do
-        if task.status ~= 'x' and (task.urgency == 1 or task.urgency == 2 or task.urgency == 3) then
-            weekCount = weekCount + 1
+
+    local overdueCnt, todayCnt = 0, 0
+    for _, t in ipairs(cachedTasks) do
+        if t.status ~= 'x' then
+            if t.urgency == 1 then
+                overdueCnt = overdueCnt + 1
+            elseif t.urgency == 2 then
+                todayCnt = todayCnt + 1
+            end
         end
     end
-    
-    -- Badge shows this week's task count
+
     local badge = ""
-    if weekCount > 0 then
-        badge = " " .. weekCount
+    if overdueCnt > 0 or todayCnt > 0 then
+        local parts = {}
+        if overdueCnt > 0 then table.insert(parts, tostring(overdueCnt)) end
+        if todayCnt > 0 then table.insert(parts, tostring(todayCnt)) end
+        badge = " " .. table.concat(parts, "•")
     end
-    
+
     menubar:setTitle(config.menubarTitle .. badge)
-    
-    print("Refreshed - found " .. #cachedTasks .. " tasks (" .. weekCount .. " this week)")
+
+    print("Refreshed - found " .. #cachedTasks .. " tasks (" .. overdueCnt .. " overdue, " .. todayCnt .. " today)")
 end
 
 -- Build menu structure
@@ -450,25 +459,20 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
     for i = 1, math.min(#tasks, maxShow) do
         local task = tasks[i]
         local displayText = task.text
-        
-        -- Keep menu items readable on small screens
-        if #displayText > 45 then
-            displayText = displayText:sub(1, 42) .. "..."
+        if utf8.len(displayText or "") > 45 then
+            displayText = displayText:sub(1, 26) .. "…" .. displayText:sub(-16)
         end
-        
-        -- Visual priority indicator
-        local priorityEmoji = PRIORITY_EMOJIS[task.priority] or ""
-        
-        -- Add in-progress indicator (cancelled tasks are not shown)
-        local statusEmoji = ""
-        if task.status == "/" then
-            statusEmoji = "⏳ "
-        elseif task.status == "x" then
-            statusEmoji = "✅ "
+
+        local priorityEmoji = ""
+        if task.priority and task.priority <= 2 then
+            priorityEmoji = (PRIORITY_EMOJIS[task.priority] or "") .. " "
         end
-        
+
+        local context = task.file or ""
+        local statusEmoji = (task.status == "/" and "⏳ ") or (task.status == "x" and "✅ ") or ""
+
         table.insert(menu, {
-            title = "   " .. statusEmoji .. priorityEmoji .. " " .. displayText .. " (" .. task.file .. ")",
+            title = "   " .. statusEmoji .. priorityEmoji .. displayText .. "  ·  " .. context,
             fn = function()
                 obsidianTodos.openTaskInObsidian(task)
             end,
@@ -514,7 +518,14 @@ end
 
 -- Snooze a task by adding/updating 🛫 YYYY-MM-DD (7 days out)
 function obsidianTodos.markTaskSnoozeOneWeek(task)
-    local targetDate = os.date("%Y-%m-%d", os.time() + 7 * 24 * 60 * 60)
+    local t = os.time() + 7 * 86400
+    local dow = tonumber(os.date("%w", t))
+    if dow == 0 then
+        t = t + 1 * 86400
+    elseif dow == 6 then
+        t = t + 2 * 86400
+    end
+    local targetDate = os.date("%Y-%m-%d", t)
     local ok = updateSingleLine(task.path, task.line, function(line)
         local newLine = line
         local tmp, count = newLine:gsub("🛫%s*%d%d%d%d%-%d%d%-%d%d", "🛫 " .. targetDate)
@@ -525,7 +536,12 @@ function obsidianTodos.markTaskSnoozeOneWeek(task)
         end
         return newLine
     end)
-    if ok then refreshSoon(0.5) end
+    if ok then
+        hs.timer.doAfter(0.5, function()
+            lastScanTime = 0
+            obsidianTodos.updateMenu()
+        end)
+    end
 end
 
 -- Get vault name from config or auto-detect from path
