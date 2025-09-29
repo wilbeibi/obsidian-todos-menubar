@@ -55,7 +55,7 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { overdue = 9, today = 9, thisWeek = 6, others = 6 }
+    menuLimits = { overdue = 9, today = 9, thisWeek = 6, others = 6, donePreview = 3 }
 }
 
 -- Check whether the configured vault path exists and is a directory
@@ -407,26 +407,56 @@ function obsidianTodos.buildMenu()
         
         
         -- Add sections in order of urgency
+        local function addedDateLabel(task)
+            if task.mtime and task.mtime > 0 then
+                return "Added " .. os.date("%Y-%m-%d", task.mtime)
+            end
+            return "Added (unknown)"
+        end
+
         local sections = {
-            {overdue, "🚨 Overdue", config.menuLimits.overdue},
-            {today, "📅 Today", config.menuLimits.today},
-            {thisWeek, "📆 This Week", config.menuLimits.thisWeek},
-            {others, "📋 Other Tasks", config.menuLimits.others}
+            { tasks = overdue, title = "🚨 Overdue", limit = config.menuLimits.overdue },
+            { tasks = today, title = "📅 Today", limit = config.menuLimits.today },
+            { tasks = thisWeek, title = "📆 This Week", limit = config.menuLimits.thisWeek },
+            {
+                tasks = others,
+                title = "📋 Other Tasks",
+                limit = config.menuLimits.others,
+                options = { groupByFn = addedDateLabel, showOverflowSubmenu = true }
+            }
         }
-        
+
         for _, section in ipairs(sections) do
-            local tasks, title, limit = section[1], section[2], section[3]
+            local tasks = section.tasks
             if #tasks > 0 then
-                obsidianTodos.addMenuSection(menu, title .. " (" .. #tasks .. ")", tasks, limit)
+                obsidianTodos.addMenuSection(
+                    menu,
+                    section.title .. " (" .. #tasks .. ")",
+                    tasks,
+                    section.limit,
+                    section.options
+                )
             end
         end
 
-        -- Recently completed tasks (latest 2)
+        -- Recently completed tasks (preview + expandable list)
         if #doneTasks > 0 then
             table.sort(doneTasks, function(a, b)
                 return (a.completedAt or 0) > (b.completedAt or 0)
             end)
-            obsidianTodos.addMenuSection(menu, "✅ Done (latest 2)", doneTasks, 2)
+            local function completionLabel(task)
+                if task.completedAt and task.completedAt > 0 then
+                    return os.date("%Y-%m-%d", task.completedAt)
+                end
+                return "No completion date"
+            end
+            obsidianTodos.addMenuSection(
+                menu,
+                "✅ Done (" .. #doneTasks .. ")",
+                doneTasks,
+                config.menuLimits.donePreview,
+                { showOverflowSubmenu = true, groupByFn = completionLabel }
+            )
         end
     end
     
@@ -453,66 +483,113 @@ function obsidianTodos.buildMenu()
 end
 
 -- Add a section of tasks to menu
-function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
-    table.insert(menu, { title = title, disabled = true })
-    
-    for i = 1, math.min(#tasks, maxShow) do
-        local task = tasks[i]
-        local displayText = task.text
-        if utf8.len(displayText or "") > 45 then
-            displayText = displayText:sub(1, 26) .. "…" .. displayText:sub(-16)
-        end
+local function buildTaskMenuItem(task)
+    local displayText = task.text
+    if utf8.len(displayText or "") > 45 then
+        displayText = displayText:sub(1, 26) .. "…" .. displayText:sub(-16)
+    end
 
-        local priorityEmoji = ""
-        if task.priority and task.priority <= 2 then
-            priorityEmoji = (PRIORITY_EMOJIS[task.priority] or "") .. " "
-        end
+    local priorityEmoji = ""
+    if task.priority and task.priority <= 2 then
+        priorityEmoji = (PRIORITY_EMOJIS[task.priority] or "") .. " "
+    end
 
-        local context = task.file or ""
-        local statusEmoji = (task.status == "/" and "⏳ ") or (task.status == "x" and "✅ ") or ""
+    local context = task.file or ""
+    local statusEmoji = (task.status == "/" and "⏳ ") or (task.status == "x" and "✅ ") or ""
 
-        table.insert(menu, {
-            title = "   " .. statusEmoji .. priorityEmoji .. displayText .. "  ·  " .. context,
-            fn = function()
-                obsidianTodos.openTaskInObsidian(task)
-            end,
-            menu = {
-                {
-                    title = "✅ Mark as Done",
-                    fn = function() obsidianTodos.markTaskDone(task) end
-                },
-                {
-                    title = "⏳ Mark In Progress",
-                    fn = function() obsidianTodos.markTaskInProgress(task) end
-                },
-                {
-                    title = "❌ Mark Cancelled",
-                    fn = function() obsidianTodos.markTaskCancelled(task) end
-                },
-                {
-                    title = "📆 Due Tomorrow",
-                    fn = function() obsidianTodos.markTaskDueTomorrow(task) end
-                },
-                {
-                    title = "📆 Due This Week",
-                    fn = function() obsidianTodos.markTaskDueThisWeek(task) end
-                },
-                {
-                    title = "🛫 Snooze 1 Week",
-                    fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end
-                }
+    return {
+        title = "   " .. statusEmoji .. priorityEmoji .. displayText .. "  ·  " .. context,
+        fn = function()
+            obsidianTodos.openTaskInObsidian(task)
+        end,
+        menu = {
+            {
+                title = "✅ Mark as Done",
+                fn = function() obsidianTodos.markTaskDone(task) end
+            },
+            {
+                title = "⏳ Mark In Progress",
+                fn = function() obsidianTodos.markTaskInProgress(task) end
+            },
+            {
+                title = "❌ Mark Cancelled",
+                fn = function() obsidianTodos.markTaskCancelled(task) end
+            },
+            {
+                title = "📆 Due Tomorrow",
+                fn = function() obsidianTodos.markTaskDueTomorrow(task) end
+            },
+            {
+                title = "📆 Due This Week",
+                fn = function() obsidianTodos.markTaskDueThisWeek(task) end
+            },
+            {
+                title = "🛫 Snooze 1 Week",
+                fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end
             }
+        }
+    }
+end
+
+function obsidianTodos.addMenuSection(menu, title, tasks, maxShow, options)
+    table.insert(menu, { title = title, disabled = true })
+
+    options = options or {}
+    local limit = math.min(#tasks, maxShow or #tasks)
+    local added = 0
+
+    local groupFn = options.groupByFn
+    local headerFormatter = options.groupHeaderFormatter or function(label)
+        return "   ---- " .. label .. " ----"
+    end
+
+    local function ensureGroupHeader(targetMenu, state, task)
+        if not groupFn then return end
+        local label = groupFn(task)
+        if not label then return end
+        if state.last == label then return end
+        state.last = label
+        table.insert(targetMenu, {
+            title = headerFormatter(label),
+            disabled = true
         })
     end
-    
-    -- Indicate hidden items so users know to check vault
-    if #tasks > maxShow then
-        table.insert(menu, { 
-            title = "   ... " .. (#tasks - maxShow) .. " more items",
-            disabled = true 
-        })
+
+    local headerState = { last = nil }
+
+    for i = 1, #tasks do
+        if added >= limit then
+            break
+        end
+
+        local task = tasks[i]
+        ensureGroupHeader(menu, headerState, task)
+
+        table.insert(menu, buildTaskMenuItem(task))
+        added = added + 1
     end
-    
+
+    if #tasks > added then
+        if options.showOverflowSubmenu then
+            local overflowItems = {}
+            local overflowState = { last = nil }
+            for i = added + 1, #tasks do
+                local task = tasks[i]
+                ensureGroupHeader(overflowItems, overflowState, task)
+                table.insert(overflowItems, buildTaskMenuItem(task))
+            end
+            table.insert(menu, {
+                title = string.format("   … Show %d more", #tasks - added),
+                menu = overflowItems
+            })
+        else
+            table.insert(menu, {
+                title = "   ... " .. (#tasks - added) .. " more items",
+                disabled = true
+            })
+        end
+    end
+
     table.insert(menu, { title = "-" })
 end
 
