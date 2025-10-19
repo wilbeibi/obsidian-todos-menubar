@@ -520,8 +520,8 @@ local function buildTaskMenuItem(task)
                 fn = function() obsidianTodos.markTaskDueTomorrow(task) end
             },
             {
-                title = "📆 Due This Week",
-                fn = function() obsidianTodos.markTaskDueThisWeek(task) end
+                title = "📆 Due in 7 Days",
+                fn = function() obsidianTodos.markTaskDueIn7Days(task) end
             },
             {
                 title = "🛫 Snooze 1 Week",
@@ -734,7 +734,7 @@ function obsidianTodos.markTaskDueTomorrow(task)
 end
 
 -- Set or update a task's due date to 7 days from now
-function obsidianTodos.markTaskDueThisWeek(task)
+function obsidianTodos.markTaskDueIn7Days(task)
     setTaskDueByOffset(task, 7)
 end
 
