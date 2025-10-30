@@ -378,7 +378,6 @@ function obsidianTodos.updateMenu()
 
     menubar:setTitle(config.menubarTitle .. badge)
 
-    print("Refreshed - found " .. #cachedTasks .. " tasks (" .. overdueCnt .. " overdue, " .. todayCnt .. " today)")
 end
 
 -- Build menu structure
@@ -785,7 +784,6 @@ function obsidianTodos.init()
         end
 
         if shouldRefresh then
-            print("File change detected, refreshing...")
             -- Batch rapid saves into single refresh
             hs.timer.doAfter(config.debounceDelay, function()
                 lastScanTime = 0
@@ -797,9 +795,6 @@ function obsidianTodos.init()
     -- Populate menu immediately on load
     obsidianTodos.updateMenu()
     
-    hs.timer.doAfter(2, function()
-        print("Obsidian TODOs ready - " .. #cachedTasks .. " tasks loaded")
-    end)
 end
 
 -- Prevent resource leaks on reload
