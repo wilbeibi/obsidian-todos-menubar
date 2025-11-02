@@ -24,7 +24,7 @@ jobs:
         run: luarocks install luacheck
 
       - name: Lua syntax check
-        run: lua -p obsidian-todos.lua
+        run: luac -p obsidian-todos.lua
 
       - name: Run luacheck
         run: luacheck obsidian-todos.lua
