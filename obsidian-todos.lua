@@ -118,6 +118,7 @@ local function isIgnoredPath(p)
     return p:find("/%.obsidian/") or p:find("/Archive/") or p:find("/Templates/") or p:find("/%.trash/")
 end
 
+
 -- Parse a single task from ripgrep output
 local function parseTask(filePath, lineNumber, taskText)
     -- Normalize vault-relative and absolute paths
@@ -168,6 +169,7 @@ local function parseTask(filePath, lineNumber, taskText)
         status = status,
         dueDate = nil,
         snoozeUntil = nil,
+        scheduledDate = nil,
         priority = 5,
         urgency = 99,
         mtime = 0,
@@ -237,6 +239,42 @@ local function parseTask(filePath, lineNumber, taskText)
         end
         
     end
+
+    -- Parse scheduled date markers (⏳ YYYY-MM-DD, scheduled:: [[YYYY-MM-DD]], etc.)
+    local scheduledStr = task.text:match("⏳%s*(%d%d%d%d%-%d%d%-%d%d)") or
+                         task.text:match("scheduled::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
+                         task.text:match("scheduled:%s*(%d%d%d%d%-%d%d%-%d%d)") or
+                         task.text:match("@scheduled%((%d%d%d%d%-%d%d%-%d%d)%)")
+
+    if scheduledStr then
+        local y, m, d = scheduledStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
+        if y and m and d then
+            task.scheduledDate = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
+        end
+    end
+
+    -- Boost urgency for tasks that rely on scheduled date when no due date is present
+    if not task.dueDate and task.scheduledDate then
+        local now = os.time()
+        local diffDays = math.floor((task.scheduledDate - now) / (24 * 60 * 60))
+        if diffDays <= 0 then
+            -- Scheduled for today or earlier
+            if diffDays >= -1 then
+                task.urgency = math.min(task.urgency or 5, 2)
+            elseif diffDays >= -3 then
+                task.urgency = math.min(task.urgency or 5, 3)
+            else
+                task.urgency = math.min(task.urgency or 5, 4)
+            end
+        else
+            -- Scheduled shortly in the future
+            if diffDays <= 1 then
+                task.urgency = math.min(task.urgency or 5, 3)
+            elseif diffDays <= 7 then
+                task.urgency = math.min(task.urgency or 5, 4)
+            end
+        end
+    end
     
     -- Parse completion date if marked done
     if status == "x" then
@@ -261,6 +299,7 @@ end
 -- Calculate weighted score for task sorting
 local function calculateWeightedScore(task)
     local score = 0
+    local now = os.time()
 
     -- bucket: Overdue(1) > Today(2) > ThisWeek(3) > Later(4) > None(5)
     score = score + (6 - math.min(task.urgency or 5, 5)) * 1000
@@ -271,7 +310,7 @@ local function calculateWeightedScore(task)
     -- tie: time-to-due (closer is higher), clipped to 30 days; overdue gets a small nudge but not crazy
     local tieDue = 0
     if task.dueDate then
-        local days = math.floor((task.dueDate - os.time()) / 86400)
+        local days = math.floor((task.dueDate - now) / 86400)
         if days < 0 then
             tieDue = 40 + math.min(10, math.abs(days))
         else
@@ -279,17 +318,50 @@ local function calculateWeightedScore(task)
         end
     end
 
+    -- scheduled marker: reward tasks scheduled recently (or imminently)
+    local scheduledBoost = 0
+    if task.scheduledDate then
+        local diffDays = math.floor((now - task.scheduledDate) / 86400)
+        if diffDays >= 0 then
+            if diffDays <= 1 then
+                scheduledBoost = 70
+            elseif diffDays <= 3 then
+                scheduledBoost = 55
+            elseif diffDays <= 7 then
+                scheduledBoost = 40
+            elseif diffDays <= 14 then
+                scheduledBoost = 20
+            else
+                scheduledBoost = 10
+            end
+        else
+            local daysAhead = math.abs(diffDays)
+            if daysAhead <= 1 then
+                scheduledBoost = 35
+            elseif daysAhead <= 3 then
+                scheduledBoost = 25
+            elseif daysAhead <= 7 then
+                scheduledBoost = 15
+            else
+                scheduledBoost = 5
+            end
+        end
+        if task.dueDate then
+            scheduledBoost = scheduledBoost * 0.4
+        end
+    end
+
     -- soft recency: only last 7 days matter
     local recency = 0
     if task.mtime and task.mtime > 0 then
-        local days = math.floor((os.time() - task.mtime) / 86400)
+        local days = math.floor((now - task.mtime) / 86400)
         recency = math.max(0, 7 - math.min(7, days))
     end
 
     -- tiny preference for earlier lines (stable within a note)
     local line = 1000 - (task.line or 1000)
 
-    return score + tieDue + recency + (line * 0.01)
+    return score + tieDue + scheduledBoost + recency + (line * 0.01)
 end
 
 function obsidianTodos.scanVault()
@@ -350,7 +422,9 @@ function obsidianTodos.scanVault()
     table.sort(tasks, function(a, b)
         return calculateWeightedScore(a) > calculateWeightedScore(b)
     end)
-    
+
+    lastScanTime = os.time()
+
     return tasks
 end
 
@@ -770,21 +844,28 @@ function obsidianTodos.init()
     
     -- File watcher eliminates polling overhead
     watcher = hs.pathwatcher.new(config.vaultPath, function(paths)
-        -- Ignore changes in folders we don't scan to avoid needless refreshes
-        local shouldRefresh = false
-        if type(paths) == "table" then
-            for _, p in ipairs(paths) do
-                if not isIgnoredPath(p) then
-                    shouldRefresh = true
-                    break
-                end
+        local sawMarkdown = false
+
+        local function considerPath(p)
+            if type(p) ~= "string" or p == "" then return end
+            local path = p
+            if path:sub(1, 1) ~= "/" and config.vaultPath and config.vaultPath ~= "" then
+                path = config.vaultPath .. "/" .. path
             end
-        else
-            shouldRefresh = not isIgnoredPath(paths or "")
+            if isIgnoredPath(path) then return end
+            if path:lower():match("%.md$") then
+                sawMarkdown = true
+            end
         end
 
-        if shouldRefresh then
-            -- Batch rapid saves into single refresh
+        if type(paths) == "table" then
+            for _, p in ipairs(paths) do considerPath(p) end
+        else
+            considerPath(paths)
+        end
+
+        local elapsed = os.time() - (lastScanTime or 0)
+        if sawMarkdown or elapsed >= 30 then
             hs.timer.doAfter(config.debounceDelay, function()
                 lastScanTime = 0
                 obsidianTodos.updateMenu()
