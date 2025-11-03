@@ -1,6 +1,6 @@
 -- Obsidian TODOs Menubar v1.0
 -- A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidian tasks.
--- 
+--
 -- Features:
 -- - Fast ripgrep scanning with file watcher for instant updates
 -- - Weighted sorting by urgency, priority, recency, and line number
@@ -139,7 +139,7 @@ local function parseTask(filePath, lineNumber, taskText)
     end
 
     local fileName = relPath:match("([^/]+)%.md$") or relPath:match("([^/]+)$")
-    
+
     -- Simple text extraction - remove checkbox part
     local cleanText = taskText
     cleanText = cleanText:gsub("-%s*%[%s*%]", "") -- Remove [ ]
@@ -159,7 +159,7 @@ local function parseTask(filePath, lineNumber, taskText)
     elseif taskText:find("%[[xX]%]") then
         status = "x" -- done
     end
-    
+
     local task = {
         path = absolutePath,
         relativePath = relPath,
@@ -179,7 +179,7 @@ local function parseTask(filePath, lineNumber, taskText)
     -- Read file modification time fresh to avoid stale cache
     local mattr = hs and hs.fs and hs.fs.attributes(absolutePath)
     task.mtime = mattr and mattr.modification or 0
-    
+
     -- Parse due date from various formats
     local dateStr = task.text:match("📅%s*(%d%d%d%d%-%d%d%-%d%d)") or
                   task.text:match("due::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
@@ -207,7 +207,7 @@ local function parseTask(filePath, lineNumber, taskText)
             task.snoozeUntil = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
         end
     end
-    
+
     -- Parse priority from emoji indicators
     local priorityMap = {["🔺"] = 1, ["⏫"] = 2, ["🔼"] = 3, ["🔽"] = 4, ["⏬"] = 5}
     for emoji, priority in pairs(priorityMap) do
@@ -216,7 +216,7 @@ local function parseTask(filePath, lineNumber, taskText)
             break
         end
     end
-    
+
     -- Calculate urgency based on due date
     if task.dueDate then
         local now = os.time()
@@ -224,8 +224,17 @@ local function parseTask(filePath, lineNumber, taskText)
         local tomorrow = os.date("%Y-%m-%d", now + 24 * 60 * 60)
         local taskDay = os.date("%Y-%m-%d", task.dueDate)
         -- Calculate one week from end of today to include full 7 days
-        local oneWeekFromEndOfToday = os.time({year=os.date("%Y"), month=os.date("%m"), day=os.date("%d"), hour=23, min=59, sec=59}) + (7 * 24 * 60 * 60)
-        
+        local todayDate = os.date("*t")
+        local endOfToday = os.time({
+            year = todayDate.year,
+            month = todayDate.month,
+            day = todayDate.day,
+            hour = 23,
+            min = 59,
+            sec = 59
+        })
+        local oneWeekFromEndOfToday = endOfToday + (7 * 24 * 60 * 60)
+
         if task.dueDate < now then
             task.urgency = 1 -- Overdue
         elseif taskDay == today then
@@ -237,7 +246,7 @@ local function parseTask(filePath, lineNumber, taskText)
         else
             task.urgency = 4 -- Later
         end
-        
+
     end
 
     -- Parse scheduled date markers (⏳ YYYY-MM-DD, scheduled:: [[YYYY-MM-DD]], etc.)
@@ -275,7 +284,7 @@ local function parseTask(filePath, lineNumber, taskText)
             end
         end
     end
-    
+
     -- Parse completion date if marked done
     if status == "x" then
         local doneStr = task.text:match("✅%s*(%d%d%d%d%-%d%d%-%d%d)") or
@@ -292,7 +301,7 @@ local function parseTask(filePath, lineNumber, taskText)
             task.completedAt = task.mtime
         end
     end
-    
+
     return task
 end
 
@@ -368,7 +377,7 @@ function obsidianTodos.scanVault()
     -- Find ripgrep executable - try multiple common locations
     local rgPath = nil
     local possiblePaths = {"/opt/homebrew/bin/rg", "/usr/local/bin/rg", "rg"}
-    
+
     for _, path in ipairs(possiblePaths) do
         local handle = io.popen("which " .. path .. " 2>/dev/null")
         if handle then
@@ -380,15 +389,15 @@ function obsidianTodos.scanVault()
             end
         end
     end
-    
+
     if not rgPath then
         print("Error: ripgrep (rg) not found. Install with: brew install ripgrep")
         return {}
     end
-    
+
     local tasks = {}
     local now = os.time()
-    
+
     -- Simple patterns for different task types we show
     -- Note: Cancelled tasks `[-]` are recognized but not displayed in the menu
     local patterns = {
@@ -396,12 +405,25 @@ function obsidianTodos.scanVault()
         "'^\\s*-\\s*\\[/\\]\\s*.+'",      -- [/] in-progress
         "'^\\s*-\\s*\\[[xX]\\]\\s*.+'"   -- [x] done
     }
-    
+
     for _, pattern in ipairs(patterns) do
-        local cmd = "cd " .. shQuote(config.vaultPath) .. " && " .. rgPath .. " --no-heading --with-filename --line-number " ..
-                    "--glob '!Archive/**' --glob '!.obsidian/**' --glob '!Templates/**' --glob '!.trash/**' " ..
-                    pattern .. " . 2>/dev/null"
-        
+        local cmdParts = {
+            "cd " .. shQuote(config.vaultPath),
+            "&&",
+            rgPath,
+            "--no-heading",
+            "--with-filename",
+            "--line-number",
+            "--glob '!Archive/**'",
+            "--glob '!.obsidian/**'",
+            "--glob '!Templates/**'",
+            "--glob '!.trash/**'",
+            pattern,
+            ".",
+            "2>/dev/null"
+        }
+        local cmd = table.concat(cmdParts, " ")
+
         local handle = io.popen(cmd)
         if handle then
             for line in handle:lines() do
@@ -417,7 +439,7 @@ function obsidianTodos.scanVault()
             handle:close()
         end
     end
-    
+
     -- Sort by weighted score (higher score = higher priority)
     table.sort(tasks, function(a, b)
         return calculateWeightedScore(a) > calculateWeightedScore(b)
@@ -457,13 +479,13 @@ end
 -- Build menu structure
 function obsidianTodos.buildMenu()
     local menu = {}
-    
+
     if #cachedTasks == 0 then
         table.insert(menu, {title = "No pending tasks found!", disabled = true})
     else
         -- Separate buckets prevent overdue tasks from getting buried
         local overdue, today, thisWeek, others, doneTasks = {}, {}, {}, {}, {}
-        
+
         for _, task in ipairs(cachedTasks) do
             if task.status == 'x' then
                 table.insert(doneTasks, task)
@@ -477,8 +499,8 @@ function obsidianTodos.buildMenu()
                 table.insert(others, task)
             end
         end
-        
-        
+
+
         -- Add sections in order of urgency
         local function addedDateLabel(task)
             if task.mtime and task.mtime > 0 then
@@ -532,10 +554,10 @@ function obsidianTodos.buildMenu()
             )
         end
     end
-    
+
     -- Action items
     table.insert(menu, { title = "-" })
-    
+
     table.insert(menu, {
         title = "🔄 Refresh (" .. #cachedTasks .. " tasks)",
         fn = function()
@@ -543,15 +565,15 @@ function obsidianTodos.buildMenu()
             obsidianTodos.updateMenu()
         end
     })
-    
+
     table.insert(menu, {
         title = "📂 Open Vault Folder",
         fn = function()
             hs.execute('open ' .. shQuote(config.vaultPath))
         end
     })
-    
-    
+
+
     return menu
 end
 
@@ -699,11 +721,11 @@ local function getVaultName()
     if config.vaultName then
         return config.vaultName
     end
-    
+
     if config.vaultPath:match("iCloud~md~obsidian") then
         return config.vaultPath:match("Documents/([^/]+)$") or "Vault"
     end
-    
+
     return config.vaultPath:match("([^/]+)$") or "Vault"
 end
 
@@ -841,7 +863,7 @@ function obsidianTodos.init()
     menubar:setMenu(function()
         return obsidianTodos.buildMenu()
     end)
-    
+
     -- File watcher eliminates polling overhead
     watcher = hs.pathwatcher.new(config.vaultPath, function(paths)
         local sawMarkdown = false
@@ -872,10 +894,10 @@ function obsidianTodos.init()
             end)
         end
     end):start()
-    
+
     -- Populate menu immediately on load
     obsidianTodos.updateMenu()
-    
+
 end
 
 -- Prevent resource leaks on reload
