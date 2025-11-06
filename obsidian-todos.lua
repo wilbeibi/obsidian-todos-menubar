@@ -32,7 +32,8 @@ end
 -- 2) Environment variables OBSIDIAN_TODOS_VAULT or OBSIDIAN_VAULT_PATH
 -- 3) Default iCloud Obsidian path
 local function resolveVaultPath()
-    local defaultPath = (os.getenv("HOME") or "") .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault"
+    local defaultPath = (os.getenv("HOME") or "")
+        .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault"
 
     local settingsPath = nil
     if hs and hs.settings and type(hs.settings.get) == "function" then
@@ -71,10 +72,22 @@ local cachedTasks = {}
 local lastScanTime = 0
 -- mtime cache removed to avoid stale recency sorting after edits
 
+local function recordLastScan()
+    lastScanTime = os.time()
+end
+
+local function resetLastScan()
+    lastScanTime = 0
+end
+
+local function getLastScan()
+    return lastScanTime
+end
+
 -- Shared small utilities
 local function refreshSoon(delaySec)
     hs.timer.doAfter(delaySec or 0.5, function()
-        lastScanTime = 0
+        resetLastScan()
         obsidianTodos.updateMenu()
     end)
 end
@@ -445,7 +458,7 @@ function obsidianTodos.scanVault()
         return calculateWeightedScore(a) > calculateWeightedScore(b)
     end)
 
-    lastScanTime = os.time()
+    recordLastScan()
 
     return tasks
 end
@@ -561,7 +574,7 @@ function obsidianTodos.buildMenu()
     table.insert(menu, {
         title = "🔄 Refresh (" .. #cachedTasks .. " tasks)",
         fn = function()
-            lastScanTime = 0 -- Bypass debounce for manual refresh
+            resetLastScan() -- Bypass debounce for manual refresh
             obsidianTodos.updateMenu()
         end
     })
@@ -710,7 +723,7 @@ function obsidianTodos.markTaskSnoozeOneWeek(task)
     end)
     if ok then
         hs.timer.doAfter(0.5, function()
-            lastScanTime = 0
+            resetLastScan()
             obsidianTodos.updateMenu()
         end)
     end
@@ -844,7 +857,10 @@ function obsidianTodos.init()
     -- Validate vault path before wiring the watcher
     if not vaultPathExists() then
         print("[Obsidian TODOs] vaultPath does not exist: " .. tostring(config.vaultPath))
-        print("Configure via: hs.settings.set('obsidianTodos.vaultPath','/absolute/path/to/YourVault'); hs.reload()")
+        print(
+            "Configure via: hs.settings.set('obsidianTodos.vaultPath','/absolute/path/to/YourVault'); "
+            .. "hs.reload()"
+        )
 
         menubar:setTitle(config.menubarTitle .. " !")
         menubar:setMenu({
@@ -886,10 +902,10 @@ function obsidianTodos.init()
             considerPath(paths)
         end
 
-        local elapsed = os.time() - (lastScanTime or 0)
+        local elapsed = os.time() - getLastScan()
         if sawMarkdown or elapsed >= 30 then
             hs.timer.doAfter(config.debounceDelay, function()
-                lastScanTime = 0
+                resetLastScan()
                 obsidianTodos.updateMenu()
             end)
         end
