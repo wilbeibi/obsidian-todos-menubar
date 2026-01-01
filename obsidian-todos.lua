@@ -466,7 +466,7 @@ end
 function obsidianTodos.updateMenu()
     cachedTasks = obsidianTodos.scanVault()
 
-    local overdueCnt, todayCnt, thisWeekCnt = 0, 0, 0
+    local overdueCnt, todayCnt, thisWeekCnt, backlogCnt = 0, 0, 0, 0
     for _, t in ipairs(cachedTasks) do
         if t.status ~= 'x' then
             if t.urgency == 1 then
@@ -475,21 +475,27 @@ function obsidianTodos.updateMenu()
                 todayCnt = todayCnt + 1
             elseif t.urgency == 3 then
                 thisWeekCnt = thisWeekCnt + 1
+            else
+                backlogCnt = backlogCnt + 1
             end
         end
     end
 
     -- Tiered display: show only the most urgent category
-    local badge = ""
+    local title = ""
     if overdueCnt > 0 then
-        badge = " ⚠️ " .. tostring(overdueCnt)
+        title = "⚠️ " .. tostring(overdueCnt)
     elseif todayCnt > 0 then
-        badge = " " .. tostring(todayCnt)
+        title = "🔔 " .. tostring(todayCnt)
     elseif thisWeekCnt > 0 then
-        badge = " " .. tostring(thisWeekCnt)
+        title = "📆 " .. tostring(thisWeekCnt)
+    elseif backlogCnt > 0 then
+        title = "📋 " .. tostring(backlogCnt)
+    else
+        title = "✓"  -- All done!
     end
 
-    menubar:setTitle(config.menubarTitle .. badge)
+    menubar:setTitle(title)
 
 end
 
