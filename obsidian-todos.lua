@@ -466,23 +466,27 @@ end
 function obsidianTodos.updateMenu()
     cachedTasks = obsidianTodos.scanVault()
 
-    local overdueCnt, todayCnt = 0, 0
+    local overdueCnt, todayCnt, thisWeekCnt = 0, 0, 0
     for _, t in ipairs(cachedTasks) do
         if t.status ~= 'x' then
             if t.urgency == 1 then
                 overdueCnt = overdueCnt + 1
             elseif t.urgency == 2 then
                 todayCnt = todayCnt + 1
+            elseif t.urgency == 3 then
+                thisWeekCnt = thisWeekCnt + 1
             end
         end
     end
 
+    -- Tiered display: show only the most urgent category
     local badge = ""
-    if overdueCnt > 0 or todayCnt > 0 then
-        local parts = {}
-        if overdueCnt > 0 then table.insert(parts, tostring(overdueCnt)) end
-        if todayCnt > 0 then table.insert(parts, tostring(todayCnt)) end
-        badge = " " .. table.concat(parts, "•")
+    if overdueCnt > 0 then
+        badge = " ⚠️ " .. tostring(overdueCnt)
+    elseif todayCnt > 0 then
+        badge = " " .. tostring(todayCnt)
+    elseif thisWeekCnt > 0 then
+        badge = " " .. tostring(thisWeekCnt)
     end
 
     menubar:setTitle(config.menubarTitle .. badge)
