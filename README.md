@@ -45,6 +45,7 @@ Write tasks in your Obsidian notes using standard markdown checkboxes:
 
 ### Menubar Interaction
 - **Badge number**: Shows overdue + today's task count
+- **Hover tooltip**: Shows non-zero counts for Overdue, Today, This Week
 - **Click task**: Opens the task in Obsidian (Advanced URI plugin used automatically when available)
 - **⏳ Hourglass icon**: Indicates in-progress tasks (`[/]`)
 - **Hover over task**: Reveals submenu with actions:
@@ -61,7 +62,7 @@ Write tasks in your Obsidian notes using standard markdown checkboxes:
 A few reminders while you use it:
 
 - Checkbox rows drive everything. Todos (`- [ ]`), in-progress (`- [/]`), done (`- [x]`), and cancelled (`- [-]`) are all recognised.
-- The badge in the menubar shows overdue and today counts. Submenus expose quick actions (done, in progress, cancel, due tomorrow, due in 7 days, snooze one week).
+- The badge in the menubar shows one count: overdue first, then today, then pending. Submenus expose quick actions (done, in progress, cancel, due tomorrow, due in 7 days, snooze one week).
 - Done tasks get `✅ YYYY-MM-DD` appended automatically.
 
 ## Configuration

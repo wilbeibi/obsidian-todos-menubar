@@ -29,7 +29,7 @@ end
 
 -- Resolve the vault path with overrides in this order:
 -- 1) hs.settings.get('obsidianTodos.vaultPath')
--- 2) Environment variables OBSIDIAN_TODOS_VAULT or OBSIDIAN_VAULT_PATH
+-- 2) Environment variables OBSIDIAN_TODOS_VAULT, OBSIDIAN_VAULT_PATH, or OBSIDIAN_VAULT_ROOT
 -- 3) Default iCloud Obsidian path
 local function resolveVaultPath()
     local defaultPath = (os.getenv("HOME") or "")
@@ -40,7 +40,9 @@ local function resolveVaultPath()
         settingsPath = hs.settings.get('obsidianTodos.vaultPath')
     end
 
-    local envPath = os.getenv('OBSIDIAN_TODOS_VAULT') or os.getenv('OBSIDIAN_VAULT_PATH')
+    local envPath = os.getenv('OBSIDIAN_TODOS_VAULT')
+        or os.getenv('OBSIDIAN_VAULT_PATH')
+        or os.getenv('OBSIDIAN_VAULT_ROOT')
     local path = settingsPath or envPath or defaultPath
 
     -- Expand ~ if present
@@ -386,6 +388,20 @@ local function calculateWeightedScore(task)
     return score + tieDue + scheduledBoost + recency + (line * 0.01)
 end
 
+local function buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt)
+    local lines = {}
+    if overdueCnt > 0 then
+        table.insert(lines, "Overdue: " .. tostring(overdueCnt))
+    end
+    if todayCnt > 0 then
+        table.insert(lines, "Today: " .. tostring(todayCnt))
+    end
+    if thisWeekCnt > 0 then
+        table.insert(lines, "This Week: " .. tostring(thisWeekCnt))
+    end
+    return table.concat(lines, "\n")
+end
+
 function obsidianTodos.scanVault()
     -- Find ripgrep executable - try multiple common locations
     local rgPath = nil
@@ -496,6 +512,15 @@ function obsidianTodos.updateMenu()
     end
 
     menubar:setTitle(title)
+
+    if menubar.setTooltip then
+        local tooltip = buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt)
+        if tooltip ~= "" then
+            menubar:setTooltip(tooltip)
+        else
+            menubar:setTooltip(nil)
+        end
+    end
 
 end
 
