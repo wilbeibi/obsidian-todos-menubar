@@ -498,7 +498,7 @@ function obsidianTodos.updateMenu()
     end
 
     -- Tiered display: show only the most urgent category
-    local title = ""
+    local title
     if overdueCnt > 0 then
         title = "⚠️ " .. tostring(overdueCnt)
     elseif todayCnt > 0 then
