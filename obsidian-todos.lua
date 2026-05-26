@@ -515,11 +515,7 @@ function obsidianTodos.updateMenu()
 
     if menubar.setTooltip then
         local tooltip = buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt)
-        if tooltip ~= "" then
-            menubar:setTooltip(tooltip)
-        else
-            menubar:setTooltip(nil)
-        end
+        menubar:setTooltip(tooltip or "")
     end
 
 end
