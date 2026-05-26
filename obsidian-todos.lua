@@ -18,7 +18,7 @@
 -- License: MIT
 
 local obsidianTodos = {}
-local utf8 = _G.utf8 or require("utf8")
+local utf8 = utf8
 
 -- Safe shell quoting for single-arg usage (e.g., paths)
 local function shQuote(s)
@@ -61,6 +61,8 @@ local config = {
     menuLimits = { overdue = 9, today = 9, thisWeek = 6, others = 6, donePreview = 3 }
 }
 
+local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
+
 -- Check whether the configured vault path exists and is a directory
 local function vaultPathExists()
     local attr = hs and hs.fs and hs.fs.attributes(config.vaultPath)
@@ -74,28 +76,32 @@ local cachedTasks = {}
 local lastScanTime = 0
 -- mtime cache removed to avoid stale recency sorting after edits
 
-local function recordLastScan()
-    lastScanTime = os.time()
-end
-
-local function resetLastScan()
-    lastScanTime = 0
-end
-
-local function getLastScan()
-    return lastScanTime
-end
-
 -- Shared small utilities
 local function refreshSoon(delaySec)
     hs.timer.doAfter(delaySec or 0.5, function()
-        resetLastScan()
+        lastScanTime = 0
         obsidianTodos.updateMenu()
     end)
 end
 
 -- Constant mapping for rendering
 local PRIORITY_EMOJIS = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
+
+-- Match a YYYY-MM-DD date in any of the supported task-format styles
+local function extractDate(text, emoji, keyword)
+    return text:match(emoji .. "%s*(%d%d%d%d%-%d%d%-%d%d)")
+        or text:match(keyword .. "::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]")
+        or text:match(keyword .. ":%s*(%d%d%d%d%-%d%d%-%d%d)")
+        or text:match("@" .. keyword .. "%((%d%d%d%d%-%d%d%-%d%d)%)")
+end
+
+-- Convert YYYY-MM-DD to end-of-day epoch, or nil if input is nil/malformed
+local function toEpoch(dateStr)
+    if not dateStr then return nil end
+    local y, m, d = dateStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
+    if not y then return nil end
+    return os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
+end
 
 local function updateSingleLine(filePath, lineNumber, transformFn)
     local file = io.open(filePath, "r")
@@ -133,6 +139,92 @@ local function isIgnoredPath(p)
     return p:find("/%.obsidian/") or p:find("/Archive/") or p:find("/Templates/") or p:find("/%.trash/")
 end
 
+local function findIgnoredNotes(rgPath)
+    local ignored = {}
+    local cmdParts = {
+        "cd " .. shQuote(config.vaultPath),
+        "&&",
+        rgPath,
+        "--files-with-matches",
+        "--glob '*.md'",
+        "--glob '!Archive/**'",
+        "--glob '!.obsidian/**'",
+        "--glob '!Templates/**'",
+        "--glob '!.trash/**'",
+        "'^\\s*obsidian-todos-ignore:\\s*[\\x27\\x22]?true[\\x27\\x22]?\\s*$'",
+        ".",
+        "2>/dev/null"
+    }
+    local handle = io.popen(table.concat(cmdParts, " "))
+    if not handle then return ignored end
+
+    for line in handle:lines() do
+        local rel = line
+        if rel:sub(1, 2) == "./" then rel = rel:sub(3) end
+        local abs = rel
+        if rel:sub(1, 1) ~= "/" then
+            abs = (config.vaultPath or "") .. "/" .. rel
+        end
+        ignored[abs] = true
+    end
+    handle:close()
+    return ignored
+end
+
+local function setIgnoredTodosFrontmatter(filePath)
+    local file = io.open(filePath, "r")
+    if not file then
+        print("Error: Could not open file: " .. tostring(filePath))
+        return false
+    end
+
+    local lines = {}
+    for line in file:lines() do
+        table.insert(lines, line)
+    end
+    file:close()
+
+    local propertyLine = IGNORE_FRONTMATTER_KEY .. ": true"
+    if lines[1] == "---" then
+        local closingLine = nil
+        local propertyLineNumber = nil
+        for i = 2, #lines do
+            if lines[i] == "---" or lines[i] == "..." then
+                closingLine = i
+                break
+            end
+            if lines[i]:match("^%s*obsidian%-todos%-ignore%s*:") then
+                propertyLineNumber = i
+                break
+            end
+        end
+
+        if propertyLineNumber then
+            lines[propertyLineNumber] = propertyLine
+        elseif closingLine then
+            table.insert(lines, closingLine, propertyLine)
+        else
+            print("Error: Could not update malformed frontmatter in file: " .. tostring(filePath))
+            return false
+        end
+    else
+        table.insert(lines, 1, "---")
+        table.insert(lines, 2, propertyLine)
+        table.insert(lines, 3, "---")
+    end
+
+    file = io.open(filePath, "w")
+    if not file then
+        print("Error: Could not write to file: " .. tostring(filePath))
+        return false
+    end
+    for _, line in ipairs(lines) do
+        file:write(line .. "\n")
+    end
+    file:close()
+    return true
+end
+
 
 -- Parse a single task from ripgrep output
 local function parseTask(filePath, lineNumber, taskText)
@@ -155,24 +247,19 @@ local function parseTask(filePath, lineNumber, taskText)
 
     local fileName = relPath:match("([^/]+)%.md$") or relPath:match("([^/]+)$")
 
-    -- Simple text extraction - remove checkbox part
+    -- Remove the checkbox prefix and surrounding whitespace
     local cleanText = taskText
-    cleanText = cleanText:gsub("-%s*%[%s*%]", "") -- Remove [ ]
-    cleanText = cleanText:gsub("-%s*%[/%]", "") -- Remove [/]
-    cleanText = cleanText:gsub("-%s*%[%-%]", "") -- Remove [-]
-    cleanText = cleanText:gsub("-%s*%[[xX]%]", "") -- Remove [x]
-    cleanText = cleanText:match("^%s*(.-)%s*$") -- Trim whitespace
+    cleanText = cleanText:gsub("-%s*%[%s*%]", "")    -- [ ]
+    cleanText = cleanText:gsub("-%s*%[/%]", "")       -- [/]
+    cleanText = cleanText:gsub("-%s*%[[xX]%]", "")    -- [x]
+    cleanText = cleanText:match("^%s*(.-)%s*$")
 
-    -- Keep both absolute and vault-relative paths
-
-    -- Simple status detection
-    local status = " " -- default todo
+    -- Status detection ([-] cancelled is never fetched by rg, so omitted)
+    local status = " "
     if taskText:find("%[/%]") then
-        status = "/" -- in progress
-    elseif taskText:find("%[%-%]") then
-        status = "-" -- cancelled
+        status = "/"
     elseif taskText:find("%[[xX]%]") then
-        status = "x" -- done
+        status = "x"
     end
 
     local task = {
@@ -195,126 +282,60 @@ local function parseTask(filePath, lineNumber, taskText)
     local mattr = hs and hs.fs and hs.fs.attributes(absolutePath)
     task.mtime = mattr and mattr.modification or 0
 
-    -- Parse due date from various formats
-    local dateStr = task.text:match("📅%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                  task.text:match("due::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
-                  task.text:match("due:%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                  task.text:match("@due%((%d%d%d%d%-%d%d%-%d%d)%)")
-
-    if not dateStr then
-        if task.text:find("[Dd]ue") or task.text:find("📅") then
-            dateStr = task.text:match("(%d%d%d%d%-%d%d%-%d%d)")
-        end
+    -- Parse due date (with bare-date fallback when "due"/📅 is mentioned)
+    local dueStr = extractDate(task.text, "📅", "due")
+    if not dueStr and (task.text:find("[Dd]ue") or task.text:find("📅")) then
+        dueStr = task.text:match("(%d%d%d%d%-%d%d%-%d%d)")
     end
-
-    if dateStr then
-        local y, m, d = dateStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
-        if y and m and d then
-            task.dueDate = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
-        end
-    end
-
-    -- Parse snooze until date (🛫 YYYY-MM-DD)
-    local snoozeStr = task.text:match("🛫%s*(%d%d%d%d%-%d%d%-%d%d)")
-    if snoozeStr then
-        local y, m, d = snoozeStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
-        if y and m and d then
-            task.snoozeUntil = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
-        end
-    end
+    task.dueDate = toEpoch(dueStr)
+    task.snoozeUntil = toEpoch(task.text:match("🛫%s*(%d%d%d%d%-%d%d%-%d%d)"))
+    task.scheduledDate = toEpoch(extractDate(task.text, "⏳", "scheduled"))
 
     -- Parse priority from emoji indicators
-    local priorityMap = {["🔺"] = 1, ["⏫"] = 2, ["🔼"] = 3, ["🔽"] = 4, ["⏬"] = 5}
-    for emoji, priority in pairs(priorityMap) do
+    for priority, emoji in pairs(PRIORITY_EMOJIS) do
         if task.text:find(emoji) then
             task.priority = priority
             break
         end
     end
 
-    -- Calculate urgency based on due date
+    -- Urgency from due date
     if task.dueDate then
         local now = os.time()
         local today = os.date("%Y-%m-%d")
-        local tomorrow = os.date("%Y-%m-%d", now + 24 * 60 * 60)
         local taskDay = os.date("%Y-%m-%d", task.dueDate)
-        -- Calculate one week from end of today to include full 7 days
-        local todayDate = os.date("*t")
-        local endOfToday = os.time({
-            year = todayDate.year,
-            month = todayDate.month,
-            day = todayDate.day,
-            hour = 23,
-            min = 59,
-            sec = 59
-        })
-        local oneWeekFromEndOfToday = endOfToday + (7 * 24 * 60 * 60)
+        local t = os.date("*t")
+        t.hour, t.min, t.sec = 23, 59, 59
+        local oneWeekFromEndOfToday = os.time(t) + 7 * 86400
 
         if task.dueDate < now then
             task.urgency = 1 -- Overdue
         elseif taskDay == today then
             task.urgency = 2 -- Today
-        elseif taskDay == tomorrow then
-            task.urgency = 3 -- Tomorrow
         elseif task.dueDate <= oneWeekFromEndOfToday then
             task.urgency = 3 -- This week
         else
             task.urgency = 4 -- Later
         end
-
     end
 
-    -- Parse scheduled date markers (⏳ YYYY-MM-DD, scheduled:: [[YYYY-MM-DD]], etc.)
-    local scheduledStr = task.text:match("⏳%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                         task.text:match("scheduled::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
-                         task.text:match("scheduled:%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                         task.text:match("@scheduled%((%d%d%d%d%-%d%d%-%d%d)%)")
-
-    if scheduledStr then
-        local y, m, d = scheduledStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
-        if y and m and d then
-            task.scheduledDate = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
-        end
-    end
-
-    -- Boost urgency for tasks that rely on scheduled date when no due date is present
+    -- Urgency from scheduled date (only when no due date pinned one already)
     if not task.dueDate and task.scheduledDate then
-        local now = os.time()
-        local diffDays = math.floor((task.scheduledDate - now) / (24 * 60 * 60))
+        local diffDays = math.floor((task.scheduledDate - os.time()) / 86400)
         if diffDays <= 0 then
-            -- Scheduled for today or earlier
-            if diffDays >= -1 then
-                task.urgency = math.min(task.urgency or 5, 2)
-            elseif diffDays >= -3 then
-                task.urgency = math.min(task.urgency or 5, 3)
-            else
-                task.urgency = math.min(task.urgency or 5, 4)
-            end
-        else
-            -- Scheduled shortly in the future
-            if diffDays <= 1 then
-                task.urgency = math.min(task.urgency or 5, 3)
-            elseif diffDays <= 7 then
-                task.urgency = math.min(task.urgency or 5, 4)
-            end
+            if diffDays >= -1 then task.urgency = 2
+            elseif diffDays >= -3 then task.urgency = 3
+            else task.urgency = 4 end
+        elseif diffDays <= 1 then
+            task.urgency = 3
+        elseif diffDays <= 7 then
+            task.urgency = 4
         end
     end
 
-    -- Parse completion date if marked done
+    -- Completion timestamp (falls back to file mtime)
     if status == "x" then
-        local doneStr = task.text:match("✅%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                        task.text:match("done::%s*%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]") or
-                        task.text:match("done:%s*(%d%d%d%d%-%d%d%-%d%d)") or
-                        task.text:match("@done%((%d%d%d%d%-%d%d%-%d%d)%)")
-        if doneStr then
-            local y, m, d = doneStr:match("(%d%d%d%d)-(%d%d)-(%d%d)")
-            if y and m and d then
-                task.completedAt = os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
-            end
-        end
-        if task.completedAt == 0 then
-            task.completedAt = task.mtime
-        end
+        task.completedAt = toEpoch(extractDate(task.text, "✅", "done")) or task.mtime
     end
 
     return task
@@ -426,6 +447,7 @@ function obsidianTodos.scanVault()
 
     local tasks = {}
     local now = os.time()
+    local ignoredNotes = findIgnoredNotes(rgPath)
 
     -- Simple patterns for different task types we show
     -- Note: Cancelled tasks `[-]` are recognized but not displayed in the menu
@@ -459,8 +481,9 @@ function obsidianTodos.scanVault()
                 local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
                 if filePath and lineNumber and taskText then
                     local task = parseTask(filePath, tonumber(lineNumber), taskText)
-                    -- Hide tasks snoozed into the future
-                    if not (task.snoozeUntil and task.snoozeUntil > now) then
+                    -- Hide tasks snoozed into the future or in ignored notes
+                    if not ignoredNotes[task.path]
+                        and not (task.snoozeUntil and task.snoozeUntil > now) then
                         table.insert(tasks, task)
                     end
                 end
@@ -474,7 +497,7 @@ function obsidianTodos.scanVault()
         return calculateWeightedScore(a) > calculateWeightedScore(b)
     end)
 
-    recordLastScan()
+    lastScanTime = os.time()
 
     return tasks
 end
@@ -514,8 +537,7 @@ function obsidianTodos.updateMenu()
     menubar:setTitle(title)
 
     if menubar.setTooltip then
-        local tooltip = buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt)
-        menubar:setTooltip(tooltip or "")
+        menubar:setTooltip(buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt))
     end
 
 end
@@ -605,7 +627,7 @@ function obsidianTodos.buildMenu()
     table.insert(menu, {
         title = "🔄 Refresh (" .. #cachedTasks .. " tasks)",
         fn = function()
-            resetLastScan() -- Bypass debounce for manual refresh
+            lastScanTime = 0 -- Bypass debounce for manual refresh
             obsidianTodos.updateMenu()
         end
     })
@@ -665,6 +687,10 @@ local function buildTaskMenuItem(task)
             {
                 title = "🛫 Snooze 1 Week",
                 fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end
+            },
+            {
+                title = "🙈 Ignore this file",
+                fn = function() obsidianTodos.ignoreTodosInNote(task) end
             }
         }
     }
@@ -752,12 +778,7 @@ function obsidianTodos.markTaskSnoozeOneWeek(task)
         end
         return newLine
     end)
-    if ok then
-        hs.timer.doAfter(0.5, function()
-            resetLastScan()
-            obsidianTodos.updateMenu()
-        end)
-    end
+    if ok then refreshSoon(0.5) end
 end
 
 -- Get vault name from config or auto-detect from path
@@ -832,6 +853,12 @@ end
 -- Mark a task as Cancelled by rewriting the file
 function obsidianTodos.markTaskCancelled(task)
     updateTaskStatus(task, "-", "❌")
+end
+
+function obsidianTodos.ignoreTodosInNote(task)
+    if setIgnoredTodosFrontmatter(task.path) then
+        refreshSoon(0.5)
+    end
 end
 
 -- Helper to set or update a task's due date by day offset
@@ -933,12 +960,9 @@ function obsidianTodos.init()
             considerPath(paths)
         end
 
-        local elapsed = os.time() - getLastScan()
+        local elapsed = os.time() - lastScanTime
         if sawMarkdown or elapsed >= 30 then
-            hs.timer.doAfter(config.debounceDelay, function()
-                resetLastScan()
-                obsidianTodos.updateMenu()
-            end)
+            refreshSoon(config.debounceDelay)
         end
     end):start()
 

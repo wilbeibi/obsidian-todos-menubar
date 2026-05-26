@@ -55,6 +55,7 @@ Write tasks in your Obsidian notes using standard markdown checkboxes:
   - 📆 Due Tomorrow (updates or appends due date)
   - 📆 Due in 7 Days (sets due date 7 days out)
   - 🛫 Snooze 1 Week (skips to the next weekday if the exact date is a weekend)
+  - 🙈 Ignore this file (adds `obsidian-todos-ignore: true` to that note's frontmatter)
 - **🔄 Refresh**: Manual refresh (auto-refresh via debounced file watcher)
 - **📂 Open Vault**: Opens the vault folder in Finder
 - **✅ Done (latest 2)**: Shows the two most recently completed tasks
@@ -64,6 +65,7 @@ A few reminders while you use it:
 - Checkbox rows drive everything. Todos (`- [ ]`), in-progress (`- [/]`), done (`- [x]`), and cancelled (`- [-]`) are all recognised.
 - The badge in the menubar shows one count: overdue first, then today, then pending. Submenus expose quick actions (done, in progress, cancel, due tomorrow, due in 7 days, snooze one week).
 - Done tasks get `✅ YYYY-MM-DD` appended automatically.
+- Notes with `obsidian-todos-ignore: true` in YAML frontmatter are excluded from the menu.
 
 ## Configuration
 
