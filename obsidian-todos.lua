@@ -73,13 +73,24 @@ end
 local menubar = nil
 local watcher = nil
 local cachedTasks = {}
-local lastScanTime = 0
+local rgPath = nil
 -- mtime cache removed to avoid stale recency sorting after edits
+
+local function resolveRipgrepPath()
+    for _, path in ipairs({"/opt/homebrew/bin/rg", "/usr/local/bin/rg", "rg"}) do
+        local handle = io.popen("which " .. path .. " 2>/dev/null")
+        if handle then
+            local result = handle:read("*a"):gsub("\n", "")
+            handle:close()
+            if result ~= "" then return path end
+        end
+    end
+    return nil
+end
 
 -- Shared small utilities
 local function refreshSoon(delaySec)
-    hs.timer.doAfter(delaySec or 0.5, function()
-        lastScanTime = 0
+    hs.timer.doAfter(delaySec or 0.3, function()
         obsidianTodos.updateMenu()
     end)
 end
@@ -103,16 +114,43 @@ local function toEpoch(dateStr)
     return os.time({year=y, month=m, day=d, hour=23, min=59, sec=59})
 end
 
-local function updateSingleLine(filePath, lineNumber, transformFn)
+-- Strip the leading checkbox marker (`- [ ]`, `- [x]`, `- [/]`) and surrounding
+-- whitespace, yielding the bare task text. Shared by the scanner and the
+-- stale-line guard so both agree on what "the same task" means.
+local function stripCheckbox(text)
+    local t = text or ""
+    t = t:gsub("-%s*%[%s*%]", "")    -- [ ]
+    t = t:gsub("-%s*%[/%]", "")       -- [/]
+    t = t:gsub("-%s*%[[xX]%]", "")    -- [x]
+    return t:match("^%s*(.-)%s*$")
+end
+
+-- Rewrite a single line of a file via transformFn.
+-- When expectedText is provided, the target line is mutated only if its bare
+-- task text still matches what we captured at scan time. Returns:
+--   true            on success
+--   false, "stale"  if the line moved/changed since the scan (no write)
+--   false, "io"     on a read/write failure
+local function updateSingleLine(filePath, lineNumber, transformFn, expectedText)
     local file = io.open(filePath, "r")
     if not file then
         print("Error: Could not open file: " .. tostring(filePath))
-        return false
+        return false, "io"
     end
     local lines = {}
     local ln = 1
+    local found = false
     for line in file:lines() do
         if ln == lineNumber then
+            found = true
+            -- Guard against stale line numbers: the file may have changed since
+            -- the scan that produced task.line. Refuse to edit a line that no
+            -- longer holds the task we captured, rather than clobber whatever
+            -- shifted into its place.
+            if expectedText ~= nil and stripCheckbox(line) ~= expectedText then
+                file:close()
+                return false, "stale"
+            end
             local ok, newLine = pcall(transformFn, line)
             if not ok then
                 newLine = line
@@ -125,21 +163,42 @@ local function updateSingleLine(filePath, lineNumber, transformFn)
     end
     file:close()
 
+    -- Line number ran past the end of the file: also stale.
+    if expectedText ~= nil and not found then
+        return false, "stale"
+    end
+
     file = io.open(filePath, "w")
     if not file then
         print("Error: Could not write to file: " .. tostring(filePath))
-        return false
+        return false, "io"
     end
     for _, l in ipairs(lines) do file:write(l .. "\n") end
     file:close()
     return true
 end
 
+-- Apply a single-line edit to a task's source line, guarding against stale
+-- line numbers and refreshing the menu immediately afterward. Centralizes the
+-- "edit, verify, refresh, give feedback" pattern shared by every task action.
+local function applyLineEdit(task, transformFn)
+    local ok, reason = updateSingleLine(task.path, task.line, transformFn, task.text)
+    if ok then
+        refreshSoon()
+    elseif reason == "stale" then
+        if hs and hs.alert then
+            hs.alert.show("⚠️ Task changed on disk — refreshing")
+        end
+        refreshSoon()  -- resync the menu with the file's current state
+    end
+    return ok
+end
+
 local function isIgnoredPath(p)
     return p:find("/%.obsidian/") or p:find("/Archive/") or p:find("/Templates/") or p:find("/%.trash/")
 end
 
-local function findIgnoredNotes(rgPath)
+local function findIgnoredNotes()
     local ignored = {}
     local cmdParts = {
         "cd " .. shQuote(config.vaultPath),
@@ -247,12 +306,8 @@ local function parseTask(filePath, lineNumber, taskText)
 
     local fileName = relPath:match("([^/]+)%.md$") or relPath:match("([^/]+)$")
 
-    -- Remove the checkbox prefix and surrounding whitespace
-    local cleanText = taskText
-    cleanText = cleanText:gsub("-%s*%[%s*%]", "")    -- [ ]
-    cleanText = cleanText:gsub("-%s*%[/%]", "")       -- [/]
-    cleanText = cleanText:gsub("-%s*%[[xX]%]", "")    -- [x]
-    cleanText = cleanText:match("^%s*(.-)%s*$")
+    -- Bare task text without the checkbox prefix (see stripCheckbox)
+    local cleanText = stripCheckbox(taskText)
 
     -- Status detection ([-] cancelled is never fetched by rg, so omitted)
     local status = " "
@@ -424,22 +479,6 @@ local function buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt)
 end
 
 function obsidianTodos.scanVault()
-    -- Find ripgrep executable - try multiple common locations
-    local rgPath = nil
-    local possiblePaths = {"/opt/homebrew/bin/rg", "/usr/local/bin/rg", "rg"}
-
-    for _, path in ipairs(possiblePaths) do
-        local handle = io.popen("which " .. path .. " 2>/dev/null")
-        if handle then
-            local result = handle:read("*a"):gsub("\n", "")
-            handle:close()
-            if result ~= "" then
-                rgPath = path
-                break
-            end
-        end
-    end
-
     if not rgPath then
         print("Error: ripgrep (rg) not found. Install with: brew install ripgrep")
         return {}
@@ -447,57 +486,48 @@ function obsidianTodos.scanVault()
 
     local tasks = {}
     local now = os.time()
-    local ignoredNotes = findIgnoredNotes(rgPath)
+    local ignoredNotes = findIgnoredNotes()
 
-    -- Simple patterns for different task types we show
-    -- Note: Cancelled tasks `[-]` are recognized but not displayed in the menu
-    local patterns = {
-        "'^\\s*-\\s*\\[\\s*\\]\\s*.+'",  -- [ ] todo
-        "'^\\s*-\\s*\\[/\\]\\s*.+'",      -- [/] in-progress
-        "'^\\s*-\\s*\\[[xX]\\]\\s*.+'"   -- [x] done
+    -- One pass over the vault: open `[ ]`, in-progress `[/]`, and done `[x]/[X]`
+    -- checkboxes in a single character class. Cancelled `[-]` is intentionally
+    -- excluded so it never reaches the menu.
+    local pattern = "'^\\s*-\\s*\\[[ xX/]\\]\\s*.+'"
+    local cmdParts = {
+        "cd " .. shQuote(config.vaultPath),
+        "&&",
+        rgPath,
+        "--no-heading",
+        "--with-filename",
+        "--line-number",
+        "--glob '!Archive/**'",
+        "--glob '!.obsidian/**'",
+        "--glob '!Templates/**'",
+        "--glob '!.trash/**'",
+        pattern,
+        ".",
+        "2>/dev/null"
     }
 
-    for _, pattern in ipairs(patterns) do
-        local cmdParts = {
-            "cd " .. shQuote(config.vaultPath),
-            "&&",
-            rgPath,
-            "--no-heading",
-            "--with-filename",
-            "--line-number",
-            "--glob '!Archive/**'",
-            "--glob '!.obsidian/**'",
-            "--glob '!Templates/**'",
-            "--glob '!.trash/**'",
-            pattern,
-            ".",
-            "2>/dev/null"
-        }
-        local cmd = table.concat(cmdParts, " ")
-
-        local handle = io.popen(cmd)
-        if handle then
-            for line in handle:lines() do
-                local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
-                if filePath and lineNumber and taskText then
-                    local task = parseTask(filePath, tonumber(lineNumber), taskText)
-                    -- Hide tasks snoozed into the future or in ignored notes
-                    if not ignoredNotes[task.path]
-                        and not (task.snoozeUntil and task.snoozeUntil > now) then
-                        table.insert(tasks, task)
-                    end
+    local handle = io.popen(table.concat(cmdParts, " "))
+    if handle then
+        for line in handle:lines() do
+            local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
+            if filePath and lineNumber and taskText then
+                local task = parseTask(filePath, tonumber(lineNumber), taskText)
+                -- Hide tasks snoozed into the future or in ignored notes
+                if not ignoredNotes[task.path]
+                    and not (task.snoozeUntil and task.snoozeUntil > now) then
+                    table.insert(tasks, task)
                 end
             end
-            handle:close()
         end
+        handle:close()
     end
 
     -- Sort by weighted score (higher score = higher priority)
     table.sort(tasks, function(a, b)
         return calculateWeightedScore(a) > calculateWeightedScore(b)
     end)
-
-    lastScanTime = os.time()
 
     return tasks
 end
@@ -627,7 +657,6 @@ function obsidianTodos.buildMenu()
     table.insert(menu, {
         title = "🔄 Refresh (" .. #cachedTasks .. " tasks)",
         fn = function()
-            lastScanTime = 0 -- Bypass debounce for manual refresh
             obsidianTodos.updateMenu()
         end
     })
@@ -645,9 +674,15 @@ end
 
 -- Add a section of tasks to menu
 local function buildTaskMenuItem(task)
-    local displayText = task.text
-    if utf8.len(displayText or "") > 45 then
-        displayText = displayText:sub(1, 26) .. "…" .. displayText:sub(-16)
+    local displayText = task.text or ""
+    -- Truncate on codepoint boundaries: head 26 + ellipsis + tail 16.
+    -- Byte-slicing here would split multibyte chars (emoji, dates) and emit
+    -- invalid UTF-8 into the menu title.
+    local len = utf8.len(displayText)
+    if len and len > 45 then
+        local headEnd = (utf8.offset(displayText, 27) or (#displayText + 1)) - 1
+        local tailStart = utf8.offset(displayText, -16) or 1
+        displayText = displayText:sub(1, headEnd) .. "…" .. displayText:sub(tailStart)
     end
 
     local priorityEmoji = ""
@@ -768,17 +803,13 @@ function obsidianTodos.markTaskSnoozeOneWeek(task)
         t = t + 2 * 86400
     end
     local targetDate = os.date("%Y-%m-%d", t)
-    local ok = updateSingleLine(task.path, task.line, function(line)
-        local newLine = line
-        local tmp, count = newLine:gsub("🛫%s*%d%d%d%d%-%d%d%-%d%d", "🛫 " .. targetDate)
+    applyLineEdit(task, function(line)
+        local tmp, count = line:gsub("🛫%s*%d%d%d%d%-%d%d%-%d%d", "🛫 " .. targetDate)
         if count == 0 then
-            newLine = newLine .. " 🛫 " .. targetDate
-        else
-            newLine = tmp
+            return line .. " 🛫 " .. targetDate
         end
-        return newLine
+        return tmp
     end)
-    if ok then refreshSoon(0.5) end
 end
 
 -- Get vault name from config or auto-detect from path
@@ -824,7 +855,7 @@ end
 
 -- Helper to update a task status (done, in progress, cancelled)
 local function updateTaskStatus(task, bracket, emoji)
-    local ok = updateSingleLine(task.path, task.line, function(line)
+    applyLineEdit(task, function(line)
         -- Replace the first checkbox at line start regardless of current status
         local pattern = "^(%s*%-%s*)%b[]"
         local newText, count = line:gsub(pattern, "%1[" .. bracket .. "]", 1)
@@ -837,7 +868,6 @@ local function updateTaskStatus(task, bracket, emoji)
         end
         return newText
     end)
-    if ok then refreshSoon(0.5) end
 end
 
 -- Mark a task as done by rewriting the file
@@ -857,14 +887,14 @@ end
 
 function obsidianTodos.ignoreTodosInNote(task)
     if setIgnoredTodosFrontmatter(task.path) then
-        refreshSoon(0.5)
+        refreshSoon()
     end
 end
 
 -- Helper to set or update a task's due date by day offset
 local function setTaskDueByOffset(task, daysOffset)
     local targetDate = os.date("%Y-%m-%d", os.time() + daysOffset * 24 * 60 * 60)
-    local ok = updateSingleLine(task.path, task.line, function(line)
+    applyLineEdit(task, function(line)
         local newLine = line
         local replaced = false
 
@@ -891,7 +921,6 @@ local function setTaskDueByOffset(task, daysOffset)
 
         return newLine
     end)
-    if ok then refreshSoon(0.5) end
 end
 
 -- Set or update a task's due date to tomorrow
@@ -933,6 +962,11 @@ function obsidianTodos.init()
         return
     end
 
+    rgPath = resolveRipgrepPath()
+    if not rgPath then
+        print("[Obsidian TODOs] ripgrep (rg) not found. Install with: brew install ripgrep")
+    end
+
     -- Build menu on-demand to avoid closing an open menu during refresh
     menubar:setMenu(function()
         return obsidianTodos.buildMenu()
@@ -960,8 +994,7 @@ function obsidianTodos.init()
             considerPath(paths)
         end
 
-        local elapsed = os.time() - lastScanTime
-        if sawMarkdown or elapsed >= 30 then
+        if sawMarkdown then
             refreshSoon(config.debounceDelay)
         end
     end):start()
