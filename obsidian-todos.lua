@@ -7,6 +7,7 @@
 -- - Due date parsing (📅 YYYY-MM-DD, due:: [[YYYY-MM-DD]], etc.)
 -- - Priority levels with emoji indicators (🔺⏫🔼🔽⏬)
 -- - Click to open in Obsidian, submenu to mark done
+-- - Stalled Review submenu and deliberate defer flow for long-neglected tasks
 -- - Zero idle overhead, no popup alerts
 --
 -- Installation:
@@ -58,7 +59,7 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { overdue = 9, today = 9, thisWeek = 6, others = 6, donePreview = 3 }
+    menuLimits = { overdue = 9, today = 9, thisWeek = 6, others = 6, donePreview = 3, stalled = 5 }
 }
 
 local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
@@ -97,6 +98,11 @@ end
 
 -- Constant mapping for rendering
 local PRIORITY_EMOJIS = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
+
+-- Stalled thresholds, in full days elapsed after the (end-of-day) date passed:
+-- a task due 8 days ago has 7 full days elapsed, scheduled 15 days ago has 14.
+local STALLED_DUE_DAYS = 7        -- due 8+ days ago
+local STALLED_SCHEDULED_DAYS = 14 -- scheduled 15+ days ago
 
 -- Match a YYYY-MM-DD date in any of the supported task-format styles
 local function extractDate(text, emoji, keyword)
@@ -327,6 +333,7 @@ local function parseTask(filePath, lineNumber, taskText)
         dueDate = nil,
         snoozeUntil = nil,
         scheduledDate = nil,
+        stalled = false,
         priority = 5,
         urgency = 99,
         mtime = 0,
@@ -385,6 +392,20 @@ local function parseTask(filePath, lineNumber, taskText)
             task.urgency = 3
         elseif diffDays <= 7 then
             task.urgency = 4
+        end
+    end
+
+    -- Stalled: open/in-progress tasks whose visible dates show prolonged
+    -- neglect. Derived entirely from dates already on the line — undated
+    -- tasks are never stalled because their real age is unknowable here.
+    if status ~= "x" then
+        local nowEpoch = os.time()
+        if task.dueDate
+            and math.floor((nowEpoch - task.dueDate) / 86400) >= STALLED_DUE_DAYS then
+            task.stalled = true
+        elseif task.scheduledDate
+            and math.floor((nowEpoch - task.scheduledDate) / 86400) >= STALLED_SCHEDULED_DAYS then
+            task.stalled = true
         end
     end
 
@@ -581,8 +602,12 @@ function obsidianTodos.buildMenu()
     else
         -- Separate buckets prevent overdue tasks from getting buried
         local overdue, today, thisWeek, others, doneTasks = {}, {}, {}, {}, {}
+        local stalled = {}
 
         for _, task in ipairs(cachedTasks) do
+            if task.stalled then
+                table.insert(stalled, task)
+            end
             if task.status == 'x' then
                 table.insert(doneTasks, task)
             elseif task.urgency == 1 then
@@ -596,6 +621,12 @@ function obsidianTodos.buildMenu()
             end
         end
 
+
+        -- Stalled tasks also stay in their normal urgency bucket; the review
+        -- submenu is an extra surface, not a replacement
+        if #stalled > 0 then
+            obsidianTodos.addStalledReview(menu, stalled)
+        end
 
         -- Add sections in order of urgency
         local function addedDateLabel(task)
@@ -672,6 +703,31 @@ function obsidianTodos.buildMenu()
     return menu
 end
 
+-- Build a defer action. For stalled tasks the one-click defer becomes a
+-- deliberate-choice submenu: rewriting or cancelling is one click, punting
+-- again requires explicitly picking "Defer Anyway". Non-stalled tasks keep
+-- the direct behavior so routine rescheduling stays cheap.
+local function buildDeferItem(title, task, deferFn)
+    if not task.stalled then
+        return { title = title, fn = deferFn }
+    end
+    return {
+        title = title,
+        menu = {
+            {
+                title = "✏️ Open to Rewrite",
+                fn = function() obsidianTodos.openTaskInObsidian(task) end
+            },
+            {
+                title = "❌ Cancel Task",
+                fn = function() obsidianTodos.markTaskCancelled(task) end
+            },
+            { title = "-" },
+            { title = "⏭ Defer Anyway", fn = deferFn }
+        }
+    }
+end
+
 -- Add a section of tasks to menu
 local function buildTaskMenuItem(task)
     local displayText = task.text or ""
@@ -711,24 +767,42 @@ local function buildTaskMenuItem(task)
                 title = "❌ Mark Cancelled",
                 fn = function() obsidianTodos.markTaskCancelled(task) end
             },
-            {
-                title = "📆 Due Tomorrow",
-                fn = function() obsidianTodos.markTaskDueTomorrow(task) end
-            },
-            {
-                title = "📆 Due in 7 Days",
-                fn = function() obsidianTodos.markTaskDueIn7Days(task) end
-            },
-            {
-                title = "🛫 Snooze 1 Week",
-                fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end
-            },
+            buildDeferItem("📆 Due Tomorrow", task,
+                function() obsidianTodos.markTaskDueTomorrow(task) end),
+            buildDeferItem("📆 Due in 7 Days", task,
+                function() obsidianTodos.markTaskDueIn7Days(task) end),
+            buildDeferItem("🛫 Snooze 1 Week", task,
+                function() obsidianTodos.markTaskSnoozeOneWeek(task) end),
             {
                 title = "🙈 Ignore this file",
                 fn = function() obsidianTodos.ignoreTodosInNote(task) end
             }
         }
     }
+end
+
+-- Stalled Review: a single collapsed line above the urgency buckets, so the
+-- review stays discoverable without crowding today's actionable items on
+-- every menu open. Oldest dates first, capped to keep the review glanceable.
+function obsidianTodos.addStalledReview(menu, stalledTasks)
+    table.sort(stalledTasks, function(a, b)
+        return (a.dueDate or a.scheduledDate or 0) < (b.dueDate or b.scheduledDate or 0)
+    end)
+
+    local items = {}
+    local limit = math.min(#stalledTasks, config.menuLimits.stalled)
+    for i = 1, limit do
+        table.insert(items, buildTaskMenuItem(stalledTasks[i]))
+    end
+    if #stalledTasks > limit then
+        table.insert(items, {
+            title = "   ... " .. (#stalledTasks - limit) .. " more items",
+            disabled = true
+        })
+    end
+
+    table.insert(menu, { title = "⏸️ Stalled Review (" .. #stalledTasks .. ")", menu = items })
+    table.insert(menu, { title = "-" })
 end
 
 function obsidianTodos.addMenuSection(menu, title, tasks, maxShow, options)
