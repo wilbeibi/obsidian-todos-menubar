@@ -6,10 +6,10 @@ A fast, lightweight macOS menubar app for Hammerspoon that keeps your Obsidian t
 
 ## Quick Look
 
-- Groups todos into Overdue, Today, This Week, and Later so you can focus on what matters
+- Keeps Overdue and Today visible, with This Week, Later, and recent completions in compact submenus
 - Highlights priority emojis (`🔺⏫🔼🔽⏬`) and shows in-progress (`[/]`) or recently completed (`[x]`) tasks
 - Parses due dates from common notations (`📅 2024-03-15`, `due:: [[2024-03-15]]`, `@due(2024-03-15)`, etc.)
-- Menubar submenu lets you mark done, in progress, cancel, reschedule, or snooze tasks in place
+- State-aware task menus keep Done and Start prominent while grouping scheduling and secondary actions
 - File watcher keeps the menu current moments after you save a note (no manual rescans needed)
 
 ## Setup
@@ -48,22 +48,19 @@ Write tasks in your Obsidian notes using standard markdown checkboxes:
 - **Hover tooltip**: Shows non-zero counts for Overdue, Today, This Week
 - **Click task**: Opens the task in Obsidian (Advanced URI plugin used automatically when available)
 - **⏳ Hourglass icon**: Indicates in-progress tasks (`[/]`)
-- **Hover over task**: Reveals submenu with actions:
-  - ✅ Mark as Done (appends `✅ YYYY-MM-DD`)
-  - ⏳ Mark In Progress
-  - ❌ Mark Cancelled
-  - 📆 Due Tomorrow (updates or appends due date)
-  - 📆 Due in 7 Days (sets due date 7 days out)
-  - 🛫 Snooze 1 Week (skips to the next weekday if the exact date is a weekend)
-  - 🙈 Ignore this file (adds `obsidian-todos-ignore: true` to that note's frontmatter)
+- **Hover over an open task**: Mark Done, Start, Schedule, or reveal secondary actions
+- **Schedule submenu**: Due Tomorrow, Due in 7 Days, or Snooze 1 Week
+- **Stalled task submenu**: Mark Done, open to rewrite, cancel, or deliberately defer again
+- **More submenu**: Cancel the task or ignore all tasks in its note
+- **This Week / Later**: Show short previews plus a link to all pending tasks in Obsidian Search
 - **🔄 Refresh**: Manual refresh (auto-refresh via debounced file watcher)
 - **📂 Open Vault**: Opens the vault folder in Finder
-- **✅ Done (latest 2)**: Shows the two most recently completed tasks
+- **✅ Recently Done**: Shows the three latest completions plus a link to completed tasks in Obsidian Search
 
 A few reminders while you use it:
 
 - Checkbox rows drive everything. Todos (`- [ ]`), in-progress (`- [/]`), done (`- [x]`), and cancelled (`- [-]`) are all recognised.
-- The badge in the menubar shows one count: overdue first, then today, then pending. Submenus expose quick actions (done, in progress, cancel, due tomorrow, due in 7 days, snooze one week).
+- The badge in the menubar shows one count: overdue first, then today, then pending. Overdue and Today stay inline; longer-horizon and completed work is progressively disclosed.
 - Done tasks get `✅ YYYY-MM-DD` appended automatically.
 - Notes with `obsidian-todos-ignore: true` in YAML frontmatter are excluded from the menu.
 

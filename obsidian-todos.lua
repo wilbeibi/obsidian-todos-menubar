@@ -59,7 +59,7 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { overdue = 9, today = 9, thisWeek = 6, others = 6, donePreview = 3, stalled = 5 }
+    menuLimits = { overdue = 5, today = 5, thisWeek = 5, others = 6, donePreview = 3, stalled = 5 }
 }
 
 local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
@@ -77,14 +77,28 @@ local cachedTasks = {}
 local rgPath = nil
 -- mtime cache removed to avoid stale recency sorting after edits
 
+-- Hammerspoon's io.popen runs with a bare PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+-- so a package-manager rg is never on it. Probe absolute candidates directly --
+-- macOS `which` only searches PATH by basename and always fails on an absolute
+-- argument, so testing candidates with it silently matched nothing.
 local function resolveRipgrepPath()
-    for _, path in ipairs({"/opt/homebrew/bin/rg", "/usr/local/bin/rg", "rg"}) do
-        local handle = io.popen("which " .. path .. " 2>/dev/null")
-        if handle then
-            local result = handle:read("*a"):gsub("\n", "")
-            handle:close()
-            if result ~= "" then return path end
-        end
+    local home = os.getenv("HOME") or ""
+    local candidates = {
+        "/opt/homebrew/bin/rg",
+        "/usr/local/bin/rg",
+        home .. "/.cargo/bin/rg",
+        home .. "/.local/bin/rg",
+    }
+    for _, path in ipairs(candidates) do
+        if hs.fs.attributes(path, "mode") == "file" then return path end
+    end
+
+    -- Fall back to whatever PATH the process did inherit
+    local handle = io.popen("command -v rg 2>/dev/null")
+    if handle then
+        local result = handle:read("*a"):gsub("%s+$", "")
+        handle:close()
+        if result ~= "" then return result end
     end
     return nil
 end
@@ -594,6 +608,13 @@ function obsidianTodos.updateMenu()
 end
 
 -- Build menu structure
+local function buildObsidianSearchItem(title, query)
+    return {
+        title = title,
+        fn = function() obsidianTodos.openSearchInObsidian(query) end
+    }
+end
+
 function obsidianTodos.buildMenu()
     local menu = {}
 
@@ -605,11 +626,10 @@ function obsidianTodos.buildMenu()
         local stalled = {}
 
         for _, task in ipairs(cachedTasks) do
-            if task.stalled then
-                table.insert(stalled, task)
-            end
             if task.status == 'x' then
                 table.insert(doneTasks, task)
+            elseif task.stalled then
+                table.insert(stalled, task)
             elseif task.urgency == 1 then
                 table.insert(overdue, task)
             elseif task.urgency == 2 then
@@ -622,30 +642,17 @@ function obsidianTodos.buildMenu()
         end
 
 
-        -- Stalled tasks also stay in their normal urgency bucket; the review
-        -- submenu is an extra surface, not a replacement
+        -- Keep stalled work in one review surface so it does not inflate the
+        -- visible workload by appearing again in its urgency bucket.
         if #stalled > 0 then
             obsidianTodos.addStalledReview(menu, stalled)
         end
 
-        -- Add sections in order of urgency
-        local function addedDateLabel(task)
-            if task.mtime and task.mtime > 0 then
-                return "Added " .. os.date("%Y-%m-%d", task.mtime)
-            end
-            return "Added (unknown)"
-        end
-
+        -- Only immediate work stays inline. Longer-horizon and history views
+        -- remain one level away so the top-level menu stays glanceable.
         local sections = {
             { tasks = overdue, title = "🚨 Overdue", limit = config.menuLimits.overdue },
-            { tasks = today, title = "📅 Today", limit = config.menuLimits.today },
-            { tasks = thisWeek, title = "📆 This Week", limit = config.menuLimits.thisWeek },
-            {
-                tasks = others,
-                title = "📋 Other Tasks",
-                limit = config.menuLimits.others,
-                options = { groupByFn = addedDateLabel, showOverflowSubmenu = true }
-            }
+            { tasks = today, title = "📅 Today", limit = config.menuLimits.today }
         }
 
         for _, section in ipairs(sections) do
@@ -655,30 +662,47 @@ function obsidianTodos.buildMenu()
                     menu,
                     section.title .. " (" .. #tasks .. ")",
                     tasks,
-                    section.limit,
-                    section.options
+                    section.limit
                 )
             end
         end
 
-        -- Recently completed tasks (preview + expandable list)
+        if #thisWeek > 0 then
+            table.insert(menu, {
+                title = "📆 This Week (" .. #thisWeek .. ")",
+                menu = obsidianTodos.buildTaskSubmenu(
+                    thisWeek,
+                    config.menuLimits.thisWeek,
+                    buildObsidianSearchItem("Open All Pending Tasks in Obsidian", "task-todo:/./")
+                )
+            })
+        end
+
+        if #others > 0 then
+            table.insert(menu, {
+                title = "📋 Later (" .. #others .. ")",
+                menu = obsidianTodos.buildTaskSubmenu(
+                    others,
+                    config.menuLimits.others,
+                    buildObsidianSearchItem("Open All Pending Tasks in Obsidian", "task-todo:/./")
+                )
+            })
+        end
+
+        -- Completion history belongs in Obsidian; keep only a short reassurance
+        -- strip here and provide a single escape route to the full result set.
         if #doneTasks > 0 then
             table.sort(doneTasks, function(a, b)
                 return (a.completedAt or 0) > (b.completedAt or 0)
             end)
-            local function completionLabel(task)
-                if task.completedAt and task.completedAt > 0 then
-                    return os.date("%Y-%m-%d", task.completedAt)
-                end
-                return "No completion date"
-            end
-            obsidianTodos.addMenuSection(
-                menu,
-                "✅ Done (" .. #doneTasks .. ")",
-                doneTasks,
-                config.menuLimits.donePreview,
-                { showOverflowSubmenu = true, groupByFn = completionLabel }
-            )
+            table.insert(menu, {
+                title = "✅ Recently Done",
+                menu = obsidianTodos.buildTaskSubmenu(
+                    doneTasks,
+                    config.menuLimits.donePreview,
+                    buildObsidianSearchItem("Open Completed Tasks in Obsidian", "task-done:/./")
+                )
+            })
         end
     end
 
@@ -703,29 +727,56 @@ function obsidianTodos.buildMenu()
     return menu
 end
 
--- Build a defer action. For stalled tasks the one-click defer becomes a
--- deliberate-choice submenu: rewriting or cancelling is one click, punting
--- again requires explicitly picking "Defer Anyway". Non-stalled tasks keep
--- the direct behavior so routine rescheduling stays cheap.
-local function buildDeferItem(title, task, deferFn)
-    if not task.stalled then
-        return { title = title, fn = deferFn }
-    end
+local function buildScheduleMenu(task)
     return {
-        title = title,
-        menu = {
-            {
-                title = "✏️ Open to Rewrite",
-                fn = function() obsidianTodos.openTaskInObsidian(task) end
-            },
-            {
-                title = "❌ Cancel Task",
-                fn = function() obsidianTodos.markTaskCancelled(task) end
-            },
-            { title = "-" },
-            { title = "⏭ Defer Anyway", fn = deferFn }
-        }
+        { title = "Due Tomorrow", fn = function() obsidianTodos.markTaskDueTomorrow(task) end },
+        { title = "Due in 7 Days", fn = function() obsidianTodos.markTaskDueIn7Days(task) end },
+        { title = "Snooze 1 Week", fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end }
     }
+end
+
+local function buildTaskActionMenu(task)
+    if task.status == "x" then return nil end
+
+    if task.stalled then
+        return {
+            { title = "Mark Done", fn = function() obsidianTodos.markTaskDone(task) end },
+            { title = "Open to Rewrite", fn = function() obsidianTodos.openTaskInObsidian(task) end },
+            { title = "Cancel Task", fn = function() obsidianTodos.markTaskCancelled(task) end },
+            { title = "Defer Anyway…", menu = buildScheduleMenu(task) },
+            {
+                title = "More…",
+                menu = {
+                    {
+                        title = "Ignore All Tasks in This Note",
+                        fn = function() obsidianTodos.ignoreTodosInNote(task) end
+                    }
+                }
+            }
+        }
+    end
+
+    local actions = {
+        { title = "Mark Done", fn = function() obsidianTodos.markTaskDone(task) end }
+    }
+    if task.status ~= "/" then
+        table.insert(actions, {
+            title = "Start",
+            fn = function() obsidianTodos.markTaskInProgress(task) end
+        })
+    end
+    table.insert(actions, { title = "Schedule…", menu = buildScheduleMenu(task) })
+    table.insert(actions, {
+        title = "More…",
+        menu = {
+            { title = "Cancel Task", fn = function() obsidianTodos.markTaskCancelled(task) end },
+            {
+                title = "Ignore All Tasks in This Note",
+                fn = function() obsidianTodos.ignoreTodosInNote(task) end
+            }
+        }
+    })
+    return actions
 end
 
 -- Add a section of tasks to menu
@@ -749,36 +800,27 @@ local function buildTaskMenuItem(task)
     local context = task.file or ""
     local statusEmoji = (task.status == "/" and "⏳ ") or (task.status == "x" and "✅ ") or ""
 
-    return {
+    local item = {
         title = "   " .. statusEmoji .. priorityEmoji .. displayText .. "  ·  " .. context,
         fn = function()
             obsidianTodos.openTaskInObsidian(task)
-        end,
-        menu = {
-            {
-                title = "✅ Mark as Done",
-                fn = function() obsidianTodos.markTaskDone(task) end
-            },
-            {
-                title = "⏳ Mark In Progress",
-                fn = function() obsidianTodos.markTaskInProgress(task) end
-            },
-            {
-                title = "❌ Mark Cancelled",
-                fn = function() obsidianTodos.markTaskCancelled(task) end
-            },
-            buildDeferItem("📆 Due Tomorrow", task,
-                function() obsidianTodos.markTaskDueTomorrow(task) end),
-            buildDeferItem("📆 Due in 7 Days", task,
-                function() obsidianTodos.markTaskDueIn7Days(task) end),
-            buildDeferItem("🛫 Snooze 1 Week", task,
-                function() obsidianTodos.markTaskSnoozeOneWeek(task) end),
-            {
-                title = "🙈 Ignore this file",
-                fn = function() obsidianTodos.ignoreTodosInNote(task) end
-            }
-        }
+        end
     }
+    item.menu = buildTaskActionMenu(task)
+    return item
+end
+
+function obsidianTodos.buildTaskSubmenu(tasks, maxShow, trailingItem)
+    local items = {}
+    local limit = math.min(#tasks, maxShow or #tasks)
+    for i = 1, limit do
+        table.insert(items, buildTaskMenuItem(tasks[i]))
+    end
+    if trailingItem then
+        table.insert(items, { title = "-" })
+        table.insert(items, trailingItem)
+    end
+    return items
 end
 
 -- Stalled Review: a single collapsed line above the urgency buckets, so the
@@ -795,73 +837,30 @@ function obsidianTodos.addStalledReview(menu, stalledTasks)
         table.insert(items, buildTaskMenuItem(stalledTasks[i]))
     end
     if #stalledTasks > limit then
-        table.insert(items, {
-            title = "   ... " .. (#stalledTasks - limit) .. " more items",
-            disabled = true
-        })
+        table.insert(items, { title = "-" })
+        table.insert(items, buildObsidianSearchItem(
+            "Open All Pending Tasks in Obsidian",
+            "task-todo:/./"
+        ))
     end
 
     table.insert(menu, { title = "⏸️ Stalled Review (" .. #stalledTasks .. ")", menu = items })
     table.insert(menu, { title = "-" })
 end
 
-function obsidianTodos.addMenuSection(menu, title, tasks, maxShow, options)
+function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
     table.insert(menu, { title = title, disabled = true })
 
-    options = options or {}
     local limit = math.min(#tasks, maxShow or #tasks)
-    local added = 0
-
-    local groupFn = options.groupByFn
-    local headerFormatter = options.groupHeaderFormatter or function(label)
-        return "   ---- " .. label .. " ----"
+    for i = 1, limit do
+        table.insert(menu, buildTaskMenuItem(tasks[i]))
     end
 
-    local function ensureGroupHeader(targetMenu, state, task)
-        if not groupFn then return end
-        local label = groupFn(task)
-        if not label then return end
-        if state.last == label then return end
-        state.last = label
-        table.insert(targetMenu, {
-            title = headerFormatter(label),
-            disabled = true
-        })
-    end
-
-    local headerState = { last = nil }
-
-    for i = 1, #tasks do
-        if added >= limit then
-            break
-        end
-
-        local task = tasks[i]
-        ensureGroupHeader(menu, headerState, task)
-
-        table.insert(menu, buildTaskMenuItem(task))
-        added = added + 1
-    end
-
-    if #tasks > added then
-        if options.showOverflowSubmenu then
-            local overflowItems = {}
-            local overflowState = { last = nil }
-            for i = added + 1, #tasks do
-                local task = tasks[i]
-                ensureGroupHeader(overflowItems, overflowState, task)
-                table.insert(overflowItems, buildTaskMenuItem(task))
-            end
-            table.insert(menu, {
-                title = string.format("   … Show %d more", #tasks - added),
-                menu = overflowItems
-            })
-        else
-            table.insert(menu, {
-                title = "   ... " .. (#tasks - added) .. " more items",
-                disabled = true
-            })
-        end
+    if #tasks > limit then
+        table.insert(menu, buildObsidianSearchItem(
+            "   Open All Pending Tasks in Obsidian",
+            "task-todo:/./"
+        ))
     end
 
     table.insert(menu, { title = "-" })
@@ -897,6 +896,16 @@ local function getVaultName()
     end
 
     return config.vaultPath:match("([^/]+)$") or "Vault"
+end
+
+function obsidianTodos.openSearchInObsidian(query)
+    local q = function(s) return hs.http.encodeForQuery(s or "") end
+    local uri = string.format(
+        "obsidian://search?vault=%s&query=%s",
+        q(getVaultName()),
+        q(query)
+    )
+    hs.urlevent.openURL(uri)
 end
 
 -- Detect if the Advanced URI plugin is installed in this vault
