@@ -6,7 +6,7 @@
 
 </div>
 
-Obsidian holds your tasks, but it is rarely the app you're in when you wonder what's due. This script puts a count in the menubar: how many tasks are overdue, or if none are, how many are due today. Nothing about it is ever louder than ordinary menubar text, because a number that shouts every day stops being read. Click it and each task carries Mark Done, Start, and reschedule actions that write back into the note.
+Obsidian holds your tasks, but it is rarely the app you're in when you wonder what's due. This script puts one count in the menubar, for the most urgent thing you owe: `⚠️ 2` overdue, else `🔔` due today, else `📆` this week, else `📋` backlog, else `✓`. Click it and each task carries Mark Done, Start, and reschedule actions that write back into the note.
 
 It writes one line per action: the task line you clicked, and only after re-reading it on disk to confirm it still matches what the menu showed. If the note changed underneath, it refreshes instead of guessing. Everything is local: one ripgrep scan and a file watcher, no daemon and no network.
 
@@ -59,11 +59,11 @@ Priorities `🔺⏫🔼🔽⏬` weight the sort order. A bare `YYYY-MM-DD` also 
 
 <div align="center">
 
-<img src="assets/menu.png" width="600" alt="The open menu: Overdue and Today tasks inline with their due dates and note names, This Week / Later / Recently Done as submenus, and a task's submenu showing Mark Done, Start, Schedule and More.">
+<img src="assets/menu.png" width="720" alt="The open menu: Overdue and Today tasks inline with their due dates and note names, This Week / Later / Recently Done as submenus, and a task's submenu showing Mark Done, Start, Schedule and More.">
 
 </div>
 
-- The menubar count covers one tier at a time: overdue if any, else today, else this week, else the backlog. This week and the backlog are dimmed, so a faint number means nothing is urgent; `☑︎` means nothing is pending at all. The hover tooltip breaks down overdue, today, and this week.
+- The menubar shows one tier at a time: overdue if any, else today, else this week, else the backlog. The hover tooltip breaks down overdue, today, and this week.
 - Overdue and Today stay inline. This Week, Later, and Recently Done collapse into submenus, each ending in an Obsidian search link for the full list.
 - Rows are rendered the way Obsidian renders them: date markers become `Aug 8` or `today`, links become their label, and `!` marks the two highest priorities. In-progress tasks are greyed. The raw line in your note is untouched.
 - Each task's submenu holds **Mark Done**, **Start**, **Schedule…** (Due Tomorrow, Due in 7 Days, Snooze 1 Week, which lands on a weekday), and **More…** (Cancel Task, Ignore All Tasks in This Note).
