@@ -586,24 +586,27 @@ function obsidianTodos.updateMenu()
     end
 
     -- Tiered display: the count of the most urgent non-empty tier, and nothing
-    -- else. Overdue is the one state worth reading from across the room, so it
-    -- is carried by colour rather than by a glyph.
-    local count, colorName
+    -- else. Nothing here is ever louder than ordinary menubar text; instead the
+    -- states you do not have to act on today recede, so a dim number reads as
+    -- "nothing urgent" without the bar ever raising its voice. An alarm colour
+    -- would be lit almost every day, which makes it decoration rather than
+    -- signal. Which tier it is stays one hover (tooltip) or click away.
+    local count, dim
     if overdueCnt > 0 then
-        count, colorName = overdueCnt, "systemRedColor"
+        count = overdueCnt
     elseif todayCnt > 0 then
         count = todayCnt
     elseif thisWeekCnt > 0 then
-        count, colorName = thisWeekCnt, "secondaryLabelColor"
+        count, dim = thisWeekCnt, true
     elseif backlogCnt > 0 then
-        count, colorName = backlogCnt, "secondaryLabelColor"
+        count, dim = backlogCnt, true
     end
 
     if not count then
         menubar:setTitle(config.menubarTitle)  -- All done
-    elseif colorName then
+    elseif dim then
         menubar:setTitle(hs.styledtext.new(tostring(count), {
-            color = {list = "System", name = colorName},
+            color = {list = "System", name = "secondaryLabelColor"},
             font = {name = ".AppleSystemUIFont", size = 14}
         }))
     else
