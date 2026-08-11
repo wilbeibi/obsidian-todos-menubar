@@ -113,6 +113,10 @@ end
 -- Constant mapping for rendering
 local PRIORITY_EMOJIS = {[1] = "🔺", [2] = "⏫", [3] = "🔼", [4] = "🔽", [5] = "⏬"}
 
+-- Tasks-plugin date markers, stripped from menu rows. Iterated one at a time
+-- rather than collected into a character class -- see displayLabel.
+local TASK_DATE_MARKERS = {"📅", "⏳", "🛫", "✅", "❌", "➕", "🔁"}
+
 -- Stalled thresholds, in full days elapsed after the (end-of-day) date passed:
 -- a task due 8 days ago has 7 full days elapsed, scheduled 15 days ago has 14.
 local STALLED_DUE_DAYS = 7        -- due 8+ days ago
@@ -585,33 +589,23 @@ function obsidianTodos.updateMenu()
         end
     end
 
-    -- Tiered display: the count of the most urgent non-empty tier, and nothing
-    -- else. Nothing here is ever louder than ordinary menubar text; instead the
-    -- states you do not have to act on today recede, so a dim number reads as
-    -- "nothing urgent" without the bar ever raising its voice. An alarm colour
-    -- would be lit almost every day, which makes it decoration rather than
-    -- signal. Which tier it is stays one hover (tooltip) or click away.
-    local count, dim
+    -- Tiered display: the glyph and count of the most urgent non-empty tier.
+    -- The glyph is what makes the item identifiable as this app at a glance; a
+    -- bare number in the menubar reads as a stray digit.
+    local title
     if overdueCnt > 0 then
-        count = overdueCnt
+        title = "⚠️ " .. tostring(overdueCnt)
     elseif todayCnt > 0 then
-        count = todayCnt
+        title = "🔔 " .. tostring(todayCnt)
     elseif thisWeekCnt > 0 then
-        count, dim = thisWeekCnt, true
+        title = "📆 " .. tostring(thisWeekCnt)
     elseif backlogCnt > 0 then
-        count, dim = backlogCnt, true
+        title = "📋 " .. tostring(backlogCnt)
+    else
+        title = config.menubarTitle  -- All done
     end
 
-    if not count then
-        menubar:setTitle(config.menubarTitle)  -- All done
-    elseif dim then
-        menubar:setTitle(hs.styledtext.new(tostring(count), {
-            color = {list = "System", name = "secondaryLabelColor"},
-            font = {name = ".AppleSystemUIFont", size = 14}
-        }))
-    else
-        menubar:setTitle(tostring(count))
-    end
+    menubar:setTitle(title)
 
     if menubar.setTooltip then
         menubar:setTooltip(buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt))
@@ -801,9 +795,15 @@ local function displayLabel(task)
     for _, emoji in pairs(PRIORITY_EMOJIS) do
         text = text:gsub(emoji, "")
     end
-    -- Marker + date pairs: due, scheduled, start, done, cancelled, created, recurrence
-    text = text:gsub("[📅⏳🛫✅❌➕🔁]%s*%d%d%d%d%-%d%d%-%d%d", "")
-    text = text:gsub("[📅⏳🛫✅❌➕🔁]", "")
+    -- Marker + date pairs: due, scheduled, start, done, cancelled, created,
+    -- recurrence. These must be matched one full sequence at a time: a Lua
+    -- character class is a set of BYTES, so `[📅⏳…]` would also match the
+    -- continuation bytes it shares with ordinary CJK characters (试 is
+    -- E8 AF 95, and 95 is a byte of ➕) and shred them into invalid UTF-8.
+    for _, marker in ipairs(TASK_DATE_MARKERS) do
+        text = text:gsub(marker .. "%s*%d%d%d%d%-%d%d%-%d%d", "")
+        text = text:gsub(marker, "")
+    end
     -- Dataview inline fields and TaskPaper tags for the same dates
     text = text:gsub("%f[%w]%a+::%s*%[%[%d%d%d%d%-%d%d%-%d%d%]%]", "")
     text = text:gsub("%f[%w]%a+::%s*%d%d%d%d%-%d%d%-%d%d", "")
