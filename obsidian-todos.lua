@@ -1,14 +1,14 @@
--- Obsidian TODOs Menubar v1.0
--- A fast, lightweight macOS menubar app for Hammerspoon that displays your Obsidian tasks.
+-- Obsidian TODOs Menubar
+-- A Hammerspoon menubar menu over the checkbox tasks in an Obsidian vault.
 --
--- Features:
--- - Fast ripgrep scanning with file watcher for instant updates
+-- - One ripgrep scan per refresh, driven by a debounced file watcher
 -- - Weighted sorting by urgency, priority, recency, and line number
 -- - Due date parsing (📅 YYYY-MM-DD, due:: [[YYYY-MM-DD]], etc.)
--- - Priority levels with emoji indicators (🔺⏫🔼🔽⏬)
+-- - Priority levels from emoji indicators (🔺⏫🔼🔽⏬)
+-- - Rows render the way Obsidian renders them; the note keeps the raw markers
 -- - Click to open in Obsidian, submenu to mark done
 -- - Stalled Review submenu and deliberate defer flow for long-neglected tasks
--- - Zero idle overhead, no popup alerts
+-- - No polling loop, no popup alerts
 --
 -- Installation:
 -- 1. Ensure ripgrep is installed: brew install ripgrep
@@ -585,21 +585,30 @@ function obsidianTodos.updateMenu()
         end
     end
 
-    -- Tiered display: show only the most urgent category
-    local title
+    -- Tiered display: the count of the most urgent non-empty tier, and nothing
+    -- else. Overdue is the one state worth reading from across the room, so it
+    -- is carried by colour rather than by a glyph.
+    local count, colorName
     if overdueCnt > 0 then
-        title = "⚠️ " .. tostring(overdueCnt)
+        count, colorName = overdueCnt, "systemRedColor"
     elseif todayCnt > 0 then
-        title = "🔔 " .. tostring(todayCnt)
+        count = todayCnt
     elseif thisWeekCnt > 0 then
-        title = "📆 " .. tostring(thisWeekCnt)
+        count, colorName = thisWeekCnt, "secondaryLabelColor"
     elseif backlogCnt > 0 then
-        title = "📋 " .. tostring(backlogCnt)
-    else
-        title = "✓"  -- All done!
+        count, colorName = backlogCnt, "secondaryLabelColor"
     end
 
-    menubar:setTitle(title)
+    if not count then
+        menubar:setTitle(config.menubarTitle)  -- All done
+    elseif colorName then
+        menubar:setTitle(hs.styledtext.new(tostring(count), {
+            color = {list = "System", name = colorName},
+            font = {name = ".AppleSystemUIFont", size = 14}
+        }))
+    else
+        menubar:setTitle(tostring(count))
+    end
 
     if menubar.setTooltip then
         menubar:setTooltip(buildHoverTooltip(overdueCnt, todayCnt, thisWeekCnt))
@@ -651,8 +660,8 @@ function obsidianTodos.buildMenu()
         -- Only immediate work stays inline. Longer-horizon and history views
         -- remain one level away so the top-level menu stays glanceable.
         local sections = {
-            { tasks = overdue, title = "🚨 Overdue", limit = config.menuLimits.overdue },
-            { tasks = today, title = "📅 Today", limit = config.menuLimits.today }
+            { tasks = overdue, title = "Overdue", limit = config.menuLimits.overdue },
+            { tasks = today, title = "Today", limit = config.menuLimits.today }
         }
 
         for _, section in ipairs(sections) do
@@ -669,7 +678,7 @@ function obsidianTodos.buildMenu()
 
         if #thisWeek > 0 then
             table.insert(menu, {
-                title = "📆 This Week (" .. #thisWeek .. ")",
+                title = "This Week (" .. #thisWeek .. ")",
                 menu = obsidianTodos.buildTaskSubmenu(
                     thisWeek,
                     config.menuLimits.thisWeek,
@@ -680,7 +689,7 @@ function obsidianTodos.buildMenu()
 
         if #others > 0 then
             table.insert(menu, {
-                title = "📋 Later (" .. #others .. ")",
+                title = "Later (" .. #others .. ")",
                 menu = obsidianTodos.buildTaskSubmenu(
                     others,
                     config.menuLimits.others,
@@ -696,7 +705,7 @@ function obsidianTodos.buildMenu()
                 return (a.completedAt or 0) > (b.completedAt or 0)
             end)
             table.insert(menu, {
-                title = "✅ Recently Done",
+                title = "Recently Done",
                 menu = obsidianTodos.buildTaskSubmenu(
                     doneTasks,
                     config.menuLimits.donePreview,
@@ -710,14 +719,14 @@ function obsidianTodos.buildMenu()
     table.insert(menu, { title = "-" })
 
     table.insert(menu, {
-        title = "🔄 Refresh (" .. #cachedTasks .. " tasks)",
+        title = "Refresh (" .. #cachedTasks .. " tasks)",
         fn = function()
             obsidianTodos.updateMenu()
         end
     })
 
     table.insert(menu, {
-        title = "📂 Open Vault Folder",
+        title = "Open Vault Folder",
         fn = function()
             hs.execute('open ' .. shQuote(config.vaultPath))
         end
@@ -779,29 +788,91 @@ local function buildTaskActionMenu(task)
     return actions
 end
 
+-- Strip the Tasks-plugin metadata that belongs in the note but only adds noise
+-- in a menu: the date markers and their dates, priority glyphs, and the
+-- Dataview/TaskPaper spellings of the same fields. task.text keeps the raw line
+-- (edits match against it); this is display only.
+local function displayLabel(task)
+    local text = task.text or ""
+
+    for _, emoji in pairs(PRIORITY_EMOJIS) do
+        text = text:gsub(emoji, "")
+    end
+    -- Marker + date pairs: due, scheduled, start, done, cancelled, created, recurrence
+    text = text:gsub("[📅⏳🛫✅❌➕🔁]%s*%d%d%d%d%-%d%d%-%d%d", "")
+    text = text:gsub("[📅⏳🛫✅❌➕🔁]", "")
+    -- Dataview inline fields and TaskPaper tags for the same dates
+    text = text:gsub("%f[%w]%a+::%s*%[%[%d%d%d%d%-%d%d%-%d%d%]%]", "")
+    text = text:gsub("%f[%w]%a+::%s*%d%d%d%d%-%d%d%-%d%d", "")
+    text = text:gsub("@%a+%(%d%d%d%d%-%d%d%-%d%d%)", "")
+    -- Links render as their label in Obsidian; do the same here rather than
+    -- spending the row's width on a URL.
+    text = text:gsub("%[%[([^%]|]*)|([^%]]*)%]%]", "%2")
+    text = text:gsub("%[%[([^%]]*)%]%]", "%1")
+    text = text:gsub("!?%[([^%]]*)%]%b()", "%1")
+    -- Bare URLs keep the host only
+    text = text:gsub("https?://([^%s/]+)%S*", "%1")
+
+    text = text:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- Truncate on codepoint boundaries: head 26 + ellipsis + tail 16.
+    -- Byte-slicing here would split multibyte chars and emit invalid UTF-8
+    -- into the menu title.
+    local len = utf8.len(text)
+    if len and len > 45 then
+        local headEnd = (utf8.offset(text, 27) or (#text + 1)) - 1
+        local tailStart = utf8.offset(text, -16) or 1
+        text = text:sub(1, headEnd) .. "…" .. text:sub(tailStart)
+    end
+
+    return text
+end
+
+-- The date a row is filed under, written the way a person would say it.
+-- Year only when it is not the current one.
+local function displayDate(task)
+    local epoch = task.dueDate or task.scheduledDate
+    if not epoch then return nil end
+
+    local day = os.date("*t", epoch)
+    local now = os.date("*t")
+    local function midnight(t)
+        return os.time({year = t.year, month = t.month, day = t.day, hour = 12})
+    end
+    local diffDays = math.floor((midnight(day) - midnight(now)) / 86400 + 0.5)
+
+    if diffDays == 0 then return "today" end
+    if diffDays == 1 then return "tomorrow" end
+    if diffDays == -1 then return "yesterday" end
+    -- Lua rejects strftime's %-d, so drop the padding zero here instead
+    local monthDay = os.date("%b ", epoch) .. tostring(day.day)
+    if day.year == now.year then return monthDay end
+    return monthDay .. ", " .. tostring(day.year)
+end
+
 -- Add a section of tasks to menu
 local function buildTaskMenuItem(task)
-    local displayText = task.text or ""
-    -- Truncate on codepoint boundaries: head 26 + ellipsis + tail 16.
-    -- Byte-slicing here would split multibyte chars (emoji, dates) and emit
-    -- invalid UTF-8 into the menu title.
-    local len = utf8.len(displayText)
-    if len and len > 45 then
-        local headEnd = (utf8.offset(displayText, 27) or (#displayText + 1)) - 1
-        local tailStart = utf8.offset(displayText, -16) or 1
-        displayText = displayText:sub(1, headEnd) .. "…" .. displayText:sub(tailStart)
+    -- One marker, only where it changes what you do next: high priority.
+    local marker = (task.priority and task.priority <= 2) and "! " or ""
+
+    local trailing = task.file or ""
+    local dateLabel = displayDate(task)
+    if dateLabel then
+        trailing = dateLabel .. "  ·  " .. trailing
     end
 
-    local priorityEmoji = ""
-    if task.priority and task.priority <= 2 then
-        priorityEmoji = (PRIORITY_EMOJIS[task.priority] or "") .. " "
-    end
+    local title = "   " .. marker .. displayLabel(task) .. "  ·  " .. trailing
 
-    local context = task.file or ""
-    local statusEmoji = (task.status == "/" and "⏳ ") or (task.status == "x" and "✅ ") or ""
+    -- In-progress rows read as secondary text rather than carrying a glyph.
+    if task.status == "/" then
+        title = hs.styledtext.new(title, {
+            color = {list = "System", name = "secondaryLabelColor"},
+            font = {name = ".AppleSystemUIFont", size = 14}
+        })
+    end
 
     local item = {
-        title = "   " .. statusEmoji .. priorityEmoji .. displayText .. "  ·  " .. context,
+        title = title,
         fn = function()
             obsidianTodos.openTaskInObsidian(task)
         end
@@ -844,7 +915,7 @@ function obsidianTodos.addStalledReview(menu, stalledTasks)
         ))
     end
 
-    table.insert(menu, { title = "⏸️ Stalled Review (" .. #stalledTasks .. ")", menu = items })
+    table.insert(menu, { title = "Stalled Review (" .. #stalledTasks .. ")", menu = items })
     table.insert(menu, { title = "-" })
 end
 
