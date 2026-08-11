@@ -59,7 +59,7 @@ Priorities `🔺⏫🔼🔽⏬` weight the sort order. A bare `YYYY-MM-DD` also 
 
 <div align="center">
 
-<img src="assets/menu.png" width="600" alt="The open menu: Overdue and Today tasks inline with their due dates and note names, This Week / Later / Recently Done as submenus, and a task's submenu showing Mark Done, Start, Schedule and More.">
+<img src="assets/menu.png" width="720" alt="The open menu: Overdue and Today tasks inline with their due dates and note names, This Week / Later / Recently Done as submenus, and a task's submenu showing Mark Done, Start, Schedule and More.">
 
 </div>
 
