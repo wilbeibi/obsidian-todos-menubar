@@ -724,11 +724,10 @@ function obsidianTodos.buildMenu()
     -- Action items
     table.insert(menu, { title = "-" })
 
-    -- A bare click completes a task, which is a costly thing to discover by
-    -- accident. State the modifiers once, quietly, rather than making the
-    -- submenu the only place the shortcuts are visible.
+    -- The modifiers are otherwise invisible: nothing on a row hints that the
+    -- submenu can be skipped. State them once, quietly.
     table.insert(menu, {
-        title = hs.styledtext.new("   Click to complete  ·  ⌥ open  ·  ⌘ tomorrow", {
+        title = hs.styledtext.new("   Click to open  ·  ⌥ done  ·  ⌘ tomorrow", {
             color = {list = "System", name = "secondaryLabelColor"},
             font = {name = ".AppleSystemUIFont", size = 11}
         }),
@@ -894,23 +893,29 @@ local function buildTaskMenuItem(task)
         })
     end
 
-    -- Frequency buys cheapness. Reaching the submenu means steering the cursor
-    -- the full width of the menu while staying inside one ~20pt row, and that
-    -- cost is linear in the distance, not logarithmic like an ordinary click.
-    -- So the most common action gets the bare click and the submenu keeps only
-    -- the long tail. hs.menubar passes the held modifiers as fn's first
-    -- argument; completed rows have no actions at all (buildTaskActionMenu
-    -- returns nil for them), so they stay on open-the-note.
+    -- Reaching the submenu means steering the cursor the full width of the menu
+    -- while staying inside one ~20pt row, and that cost is linear in the
+    -- distance travelled rather than logarithmic like an ordinary click. The
+    -- modifiers exist to skip that trip. hs.menubar passes the held modifiers
+    -- as fn's first argument.
+    --
+    -- The bare click stays on open-the-note, the one action here that changes
+    -- nothing: a stray click that files a task as done is expensive to notice
+    -- and expensive to undo, so the writes are the ones that need a modifier.
+    -- Completed rows have no actions at all (buildTaskActionMenu returns nil
+    -- for them), so every gesture on them opens the note.
     local item = {
         title = title,
         fn = function(mods)
             mods = mods or {}
-            if task.status == "x" or mods.alt then
+            if task.status == "x" then
                 obsidianTodos.openTaskInObsidian(task)
+            elseif mods.alt then
+                obsidianTodos.markTaskDone(task)
             elseif mods.cmd then
                 obsidianTodos.markTaskDueTomorrow(task)
             else
-                obsidianTodos.markTaskDone(task)
+                obsidianTodos.openTaskInObsidian(task)
             end
         end
     }
