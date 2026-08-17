@@ -789,6 +789,62 @@ local function buildTaskActionMenu(task)
     return actions
 end
 
+-- Column width of a codepoint as rendered in a menu: CJK ideographs, kana,
+-- Hangul, fullwidth forms, and emoji take two Latin columns. Truncating by
+-- codepoint count let a Chinese task render twice as wide as an English one
+-- of the same "length" — and the widest row sets the whole menu's width.
+local function cpColumns(cp)
+    if (cp >= 0x1100 and cp <= 0x115F)
+        or (cp >= 0x2E80 and cp <= 0x303E)
+        or (cp >= 0x3041 and cp <= 0x33FF)
+        or (cp >= 0x3400 and cp <= 0x4DBF)
+        or (cp >= 0x4E00 and cp <= 0x9FFF)
+        or (cp >= 0xAC00 and cp <= 0xD7A3)
+        or (cp >= 0xF900 and cp <= 0xFAFF)
+        or (cp >= 0xFE30 and cp <= 0xFE4F)
+        or (cp >= 0xFF00 and cp <= 0xFF60)
+        or (cp >= 0xFFE0 and cp <= 0xFFE6)
+        or (cp >= 0x1F000 and cp <= 0x1FAFF)
+        or (cp >= 0x20000 and cp <= 0x3FFFD) then
+        return 2
+    end
+    return 1
+end
+
+-- Truncate to a display-column budget, keeping the identifying head and the
+-- distinguishing tail. Cuts on codepoint boundaries; never emits invalid UTF-8.
+local function truncateColumns(text, headCols, tailCols)
+    local cps, total = {}, 0
+    for pos, cp in utf8.codes(text) do
+        local w = cpColumns(cp)
+        cps[#cps + 1] = { pos = pos, w = w }
+        total = total + w
+    end
+    -- The slack keeps an ellipsis from replacing less than it removes, and
+    -- guarantees head and tail cannot overlap.
+    if total <= headCols + tailCols + 4 then return text end
+
+    local headBytes, used = #text, 0
+    for i = 1, #cps do
+        if used + cps[i].w > headCols then
+            headBytes = cps[i].pos - 1
+            break
+        end
+        used = used + cps[i].w
+    end
+
+    local tailStart, tused = #text + 1, 0
+    for i = #cps, 1, -1 do
+        if tused + cps[i].w > tailCols then
+            tailStart = cps[i + 1] and cps[i + 1].pos or (#text + 1)
+            break
+        end
+        tused = tused + cps[i].w
+    end
+
+    return text:sub(1, headBytes) .. "…" .. text:sub(tailStart)
+end
+
 -- Strip the Tasks-plugin metadata that belongs in the note but only adds noise
 -- in a menu: the date markers and their dates, priority glyphs, and the
 -- Dataview/TaskPaper spellings of the same fields. task.text keeps the raw line
@@ -822,17 +878,7 @@ local function displayLabel(task)
 
     text = text:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
 
-    -- Truncate on codepoint boundaries: head 26 + ellipsis + tail 16.
-    -- Byte-slicing here would split multibyte chars and emit invalid UTF-8
-    -- into the menu title.
-    local len = utf8.len(text)
-    if len and len > 45 then
-        local headEnd = (utf8.offset(text, 27) or (#text + 1)) - 1
-        local tailStart = utf8.offset(text, -16) or 1
-        text = text:sub(1, headEnd) .. "…" .. text:sub(tailStart)
-    end
-
-    return text
+    return truncateColumns(text, 24, 15)
 end
 
 -- The date a row is filed under, written the way a person would say it.
@@ -889,7 +935,7 @@ local function buildTaskMenuItem(task)
     local noteLabel = task.file
     if noteLabel and noteLabel ~= ""
         and not (dateLabel and noteRestatesDate(noteLabel, task.dueDate or task.scheduledDate)) then
-        parts[#parts + 1] = noteLabel
+        parts[#parts + 1] = truncateColumns(noteLabel, 13, 6)
     end
 
     local title = "   " .. marker .. displayLabel(task)
