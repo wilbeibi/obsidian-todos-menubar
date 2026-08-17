@@ -59,7 +59,7 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { overdue = 5, today = 5, thisWeek = 5, others = 6, donePreview = 3, stalled = 5 }
+    menuLimits = { donePreview = 3, stalled = 5 } -- pending sections are uncapped by design
 }
 
 local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
@@ -663,11 +663,14 @@ function obsidianTodos.buildMenu()
             obsidianTodos.addStalledReview(menu, stalled)
         end
 
-        -- Only immediate work stays inline. Longer-horizon and history views
-        -- remain one level away so the top-level menu stays glanceable.
+        -- Every pending bucket sits at the first level, uncapped: the menu's
+        -- job is the glance, and a submenu hides the list it exists to show.
+        -- Only completion history stays one level away.
         local sections = {
-            { tasks = overdue, title = "Overdue", limit = config.menuLimits.overdue },
-            { tasks = today, title = "Today", limit = config.menuLimits.today }
+            { tasks = overdue, title = "Overdue" },
+            { tasks = today, title = "Today" },
+            { tasks = thisWeek, title = "This Week" },
+            { tasks = others, title = "Later" }
         }
 
         for _, section in ipairs(sections) do
@@ -676,32 +679,9 @@ function obsidianTodos.buildMenu()
                 obsidianTodos.addMenuSection(
                     menu,
                     section.title .. " (" .. #tasks .. ")",
-                    tasks,
-                    section.limit
+                    tasks
                 )
             end
-        end
-
-        if #thisWeek > 0 then
-            table.insert(menu, {
-                title = "This Week (" .. #thisWeek .. ")",
-                menu = obsidianTodos.buildTaskSubmenu(
-                    thisWeek,
-                    config.menuLimits.thisWeek,
-                    buildObsidianSearchItem("Open All Pending Tasks in Obsidian", "task-todo:/./")
-                )
-            })
-        end
-
-        if #others > 0 then
-            table.insert(menu, {
-                title = "Later (" .. #others .. ")",
-                menu = obsidianTodos.buildTaskSubmenu(
-                    others,
-                    config.menuLimits.others,
-                    buildObsidianSearchItem("Open All Pending Tasks in Obsidian", "task-todo:/./")
-                )
-            })
         end
 
         -- Completion history belongs in Obsidian; keep only a short reassurance
