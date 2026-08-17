@@ -724,6 +724,17 @@ function obsidianTodos.buildMenu()
     -- Action items
     table.insert(menu, { title = "-" })
 
+    -- A bare click completes a task, which is a costly thing to discover by
+    -- accident. State the modifiers once, quietly, rather than making the
+    -- submenu the only place the shortcuts are visible.
+    table.insert(menu, {
+        title = hs.styledtext.new("   Click to complete  ·  ⌥ open  ·  ⌘ tomorrow", {
+            color = {list = "System", name = "secondaryLabelColor"},
+            font = {name = ".AppleSystemUIFont", size = 11}
+        }),
+        disabled = true
+    })
+
     table.insert(menu, {
         title = "Refresh (" .. #cachedTasks .. " tasks)",
         fn = function()
@@ -883,10 +894,24 @@ local function buildTaskMenuItem(task)
         })
     end
 
+    -- Frequency buys cheapness. Reaching the submenu means steering the cursor
+    -- the full width of the menu while staying inside one ~20pt row, and that
+    -- cost is linear in the distance, not logarithmic like an ordinary click.
+    -- So the most common action gets the bare click and the submenu keeps only
+    -- the long tail. hs.menubar passes the held modifiers as fn's first
+    -- argument; completed rows have no actions at all (buildTaskActionMenu
+    -- returns nil for them), so they stay on open-the-note.
     local item = {
         title = title,
-        fn = function()
-            obsidianTodos.openTaskInObsidian(task)
+        fn = function(mods)
+            mods = mods or {}
+            if task.status == "x" or mods.alt then
+                obsidianTodos.openTaskInObsidian(task)
+            elseif mods.cmd then
+                obsidianTodos.markTaskDueTomorrow(task)
+            else
+                obsidianTodos.markTaskDone(task)
+            end
         end
     }
     item.menu = buildTaskActionMenu(task)
