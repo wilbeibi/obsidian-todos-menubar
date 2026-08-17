@@ -59,8 +59,7 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { overdue = 5, today = 5, thisWeek = 5, others = 6, donePreview = 3, stalled = 5 },
-    reopenAfterAction = true -- re-present the menu after done/defer/cancel, for triage runs
+    menuLimits = { overdue = 5, today = 5, thisWeek = 5, others = 6, donePreview = 3, stalled = 5 }
 }
 
 local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
@@ -108,33 +107,6 @@ end
 local function refreshSoon(delaySec)
     hs.timer.doAfter(delaySec or 0.3, function()
         obsidianTodos.updateMenu()
-    end)
-end
-
--- Programmatically present the menu, at the icon's own drop position unless a
--- point is given. Blocks until the menu is dismissed (NSMenu tracking loop).
-function obsidianTodos.presentMenu(point)
-    if not menubar then return end
-    if not point then
-        local ok, f = pcall(function() return menubar:frame() end)
-        if not ok or not f then return end
-        point = { x = f.x, y = f.y + f.h }
-    end
-    menubar:popupMenu(point)
-end
-
--- Triage is several actions in a sitting, but NSMenu dismisses on every
--- selection — without this, each action costs a full trip back to the icon.
--- Rescan first so the reopened list reflects the edit; reopening at the same
--- spot keeps rows spatially stable, so the list shifts up one and the cursor
--- is already resting on the next task. Open-in-Obsidian never comes through
--- here: opening is a context switch, that flow is meant to end.
-local function refreshThenReopen()
-    hs.timer.doAfter(0.05, function()
-        obsidianTodos.updateMenu()
-        if config.reopenAfterAction then
-            obsidianTodos.presentMenu()
-        end
     end)
 end
 
@@ -236,12 +208,12 @@ end
 local function applyLineEdit(task, transformFn)
     local ok, reason = updateSingleLine(task.path, task.line, transformFn, task.text)
     if ok then
-        refreshThenReopen()
+        refreshSoon()
     elseif reason == "stale" then
         if hs and hs.alert then
             hs.alert.show("⚠️ Task changed on disk — refreshing")
         end
-        refreshThenReopen()  -- resync the menu, then let the triage run continue
+        refreshSoon()  -- resync the menu with the file's current state
     end
     return ok
 end
@@ -1138,7 +1110,7 @@ end
 
 function obsidianTodos.ignoreTodosInNote(task)
     if setIgnoredTodosFrontmatter(task.path) then
-        refreshThenReopen()
+        refreshSoon()
     end
 end
 
