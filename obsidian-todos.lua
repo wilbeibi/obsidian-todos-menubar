@@ -228,6 +228,7 @@ local function findIgnoredNotes()
         "cd " .. shQuote(config.vaultPath),
         "&&",
         rgPath,
+        "--no-config",
         "--files-with-matches",
         "--glob '*.md'",
         "--glob '!Archive/**'",
@@ -530,11 +531,19 @@ function obsidianTodos.scanVault()
     -- One pass over the vault: open `[ ]`, in-progress `[/]`, and done `[x]/[X]`
     -- checkboxes in a single character class. Cancelled `[-]` is intentionally
     -- excluded so it never reaches the menu.
+    --
+    -- --no-config on every rg call: a user-level ripgreprc is written for
+    -- terminal use and may set --max-columns, which truncates matched lines
+    -- and appends a literal "[... omitted end of long line]" marker. That
+    -- mangled text lands in task.text, so the stale-line guard in
+    -- applyLineEdit sees a permanent mismatch and refuses every edit on
+    -- long (notably CJK, 3 bytes/char) tasks.
     local pattern = "'^\\s*-\\s*\\[[ xX/]\\]\\s*.+'"
     local cmdParts = {
         "cd " .. shQuote(config.vaultPath),
         "&&",
         rgPath,
+        "--no-config",
         "--no-heading",
         "--with-filename",
         "--line-number",
