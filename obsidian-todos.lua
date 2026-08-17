@@ -59,7 +59,8 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { overdue = 5, today = 5, thisWeek = 5, others = 6, donePreview = 3, stalled = 5 }
+    menuLimits = { overdue = 5, today = 5, thisWeek = 5, others = 6, donePreview = 3, stalled = 5 },
+    reopenAfterAction = true -- re-present the menu after done/defer/cancel, for triage runs
 }
 
 local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
@@ -107,6 +108,33 @@ end
 local function refreshSoon(delaySec)
     hs.timer.doAfter(delaySec or 0.3, function()
         obsidianTodos.updateMenu()
+    end)
+end
+
+-- Programmatically present the menu, at the icon's own drop position unless a
+-- point is given. Blocks until the menu is dismissed (NSMenu tracking loop).
+function obsidianTodos.presentMenu(point)
+    if not menubar then return end
+    if not point then
+        local ok, f = pcall(function() return menubar:frame() end)
+        if not ok or not f then return end
+        point = { x = f.x, y = f.y + f.h }
+    end
+    menubar:popupMenu(point)
+end
+
+-- Triage is several actions in a sitting, but NSMenu dismisses on every
+-- selection — without this, each action costs a full trip back to the icon.
+-- Rescan first so the reopened list reflects the edit; reopening at the same
+-- spot keeps rows spatially stable, so the list shifts up one and the cursor
+-- is already resting on the next task. Open-in-Obsidian never comes through
+-- here: opening is a context switch, that flow is meant to end.
+local function refreshThenReopen()
+    hs.timer.doAfter(0.05, function()
+        obsidianTodos.updateMenu()
+        if config.reopenAfterAction then
+            obsidianTodos.presentMenu()
+        end
     end)
 end
 
@@ -208,12 +236,12 @@ end
 local function applyLineEdit(task, transformFn)
     local ok, reason = updateSingleLine(task.path, task.line, transformFn, task.text)
     if ok then
-        refreshSoon()
+        refreshThenReopen()
     elseif reason == "stale" then
         if hs and hs.alert then
             hs.alert.show("⚠️ Task changed on disk — refreshing")
         end
-        refreshSoon()  -- resync the menu with the file's current state
+        refreshThenReopen()  -- resync the menu, then let the triage run continue
     end
     return ok
 end
@@ -630,39 +658,6 @@ local function buildObsidianSearchItem(title, query)
     }
 end
 
--- AppKit picks a submenu's side by available room, preferring the menu's
--- right edge. The menu hangs left-aligned under the icon, so the cursor
--- arrives at its left edge — a right-opening submenu costs a traverse of the
--- widest row. Padding the menu until its right edge nears the screen's edge
--- leaves no room there, so every submenu opens left, beside the cursor.
-local function submenuFlipPadding(baseTitle, style)
-    if not menubar then return "" end
-    local ok, iconFrame = pcall(function() return menubar:frame() end)
-    if not ok or not iconFrame then return "" end
-    local screenFrame
-    for _, s in ipairs(hs.screen.allScreens()) do
-        local f = s:fullFrame()
-        if iconFrame.x >= f.x and iconFrame.x < f.x + f.w then
-            screenFrame = f
-            break
-        end
-    end
-    if not screenFrame then
-        screenFrame = hs.screen.primaryScreen():fullFrame()
-    end
-    -- Slack keeps the menu narrow enough to stay put under the icon; any
-    -- remaining gap smaller than a submenu's width still forces the flip.
-    local target = (screenFrame.x + screenFrame.w) - iconFrame.x - 60
-    local base = hs.drawing.getTextDrawingSize(hs.styledtext.new(baseTitle, style))
-    if not base or base.w >= target then return "" end
-    -- NBSP rather than space: trailing plain spaces may not count toward width
-    local nbsp = "\u{00A0}"
-    local probe = hs.drawing.getTextDrawingSize(
-        hs.styledtext.new(string.rep(nbsp, 100), style))
-    if not probe or probe.w <= 0 then return "" end
-    return string.rep(nbsp, math.ceil((target - base.w) / (probe.w / 100)))
-end
-
 function obsidianTodos.buildMenu()
     local menu = {}
 
@@ -758,18 +753,12 @@ function obsidianTodos.buildMenu()
     table.insert(menu, { title = "-" })
 
     -- The modifiers are otherwise invisible: nothing on a row hints that the
-    -- submenu can be skipped. State them once, quietly. This row also carries
-    -- the invisible padding that keeps submenus opening leftward.
-    local captionTitle = "   Click to open  ·  ⌥ done  ·  ⌘ tomorrow"
-    local captionStyle = {
-        color = {list = "System", name = "secondaryLabelColor"},
-        font = {name = ".AppleSystemUIFont", size = 11}
-    }
+    -- submenu can be skipped. State them once, quietly.
     table.insert(menu, {
-        title = hs.styledtext.new(
-            captionTitle .. submenuFlipPadding(captionTitle, captionStyle),
-            captionStyle
-        ),
+        title = hs.styledtext.new("   Click to open  ·  ⌥ done  ·  ⌘ tomorrow", {
+            color = {list = "System", name = "secondaryLabelColor"},
+            font = {name = ".AppleSystemUIFont", size = 11}
+        }),
         disabled = true
     })
 
@@ -1149,7 +1138,7 @@ end
 
 function obsidianTodos.ignoreTodosInNote(task)
     if setIgnoredTodosFrontmatter(task.path) then
-        refreshSoon()
+        refreshThenReopen()
     end
 end
 
