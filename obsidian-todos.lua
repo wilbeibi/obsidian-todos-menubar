@@ -872,18 +872,45 @@ local function displayDate(task)
     return monthDay .. ", " .. tostring(day.year)
 end
 
+-- Daily and weekly notes are named after the period they cover, so a task
+-- captured in the note for its own due date trails two spellings of one date:
+-- "· Aug 10 · 2026-08-10 Mon". Recognise only that case. A note whose name
+-- carries a title beyond the date, or whose period does not contain the date
+-- ("· Aug 19 · 2026-07-20 Mon" — due next week, captured a month ago), is
+-- telling you something the date cannot.
+local function noteRestatesDate(file, epoch)
+    if not file or not epoch then return false end
+
+    local y, m, d = file:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)%s*%a*$")
+    if y then
+        return os.date("%Y-%m-%d", epoch) == y .. "-" .. m .. "-" .. d
+    end
+    -- ISO week, matched with %G/%V so a week spanning New Year still lines up
+    local wy, wk = file:match("^(%d%d%d%d)%-W(%d%d)$")
+    if wy then
+        return os.date("%G-W%V", epoch) == wy .. "-W" .. wk
+    end
+    return false
+end
+
 -- Add a section of tasks to menu
 local function buildTaskMenuItem(task)
     -- One marker, only where it changes what you do next: high priority.
     local marker = (task.priority and task.priority <= 2) and "! " or ""
 
-    local trailing = task.file or ""
+    local parts = {}
     local dateLabel = displayDate(task)
-    if dateLabel then
-        trailing = dateLabel .. "  ·  " .. trailing
+    if dateLabel then parts[#parts + 1] = dateLabel end
+    local noteLabel = task.file
+    if noteLabel and noteLabel ~= ""
+        and not (dateLabel and noteRestatesDate(noteLabel, task.dueDate or task.scheduledDate)) then
+        parts[#parts + 1] = noteLabel
     end
 
-    local title = "   " .. marker .. displayLabel(task) .. "  ·  " .. trailing
+    local title = "   " .. marker .. displayLabel(task)
+    if #parts > 0 then
+        title = title .. "  ·  " .. table.concat(parts, "  ·  ")
+    end
 
     -- In-progress rows read as secondary text rather than carrying a glyph.
     if task.status == "/" then
