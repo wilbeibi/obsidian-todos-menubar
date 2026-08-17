@@ -724,6 +724,17 @@ function obsidianTodos.buildMenu()
     -- Action items
     table.insert(menu, { title = "-" })
 
+    -- A bare click completes a task, which is a costly thing to discover by
+    -- accident. State the modifiers once, quietly, rather than making the
+    -- submenu the only place the shortcuts are visible.
+    table.insert(menu, {
+        title = hs.styledtext.new("   Click to complete  ·  ⌥ open  ·  ⌘ tomorrow", {
+            color = {list = "System", name = "secondaryLabelColor"},
+            font = {name = ".AppleSystemUIFont", size = 11}
+        }),
+        disabled = true
+    })
+
     table.insert(menu, {
         title = "Refresh (" .. #cachedTasks .. " tasks)",
         fn = function()
