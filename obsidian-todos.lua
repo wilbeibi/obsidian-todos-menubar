@@ -59,7 +59,9 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
-    menuLimits = { donePreview = 3, stalled = 5 } -- pending sections are uncapped by design
+    -- Time-bounded buckets (Overdue/Today/This Week) are self-limiting and
+    -- render uncapped; only the dateless backlog needs a preview cap.
+    menuLimits = { later = 10, donePreview = 3, stalled = 5 }
 }
 
 local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
@@ -663,14 +665,16 @@ function obsidianTodos.buildMenu()
             obsidianTodos.addStalledReview(menu, stalled)
         end
 
-        -- Every pending bucket sits at the first level, uncapped: the menu's
-        -- job is the glance, and a submenu hides the list it exists to show.
-        -- Only completion history stays one level away.
+        -- Every pending bucket sits at the first level: the menu's job is the
+        -- glance, and a submenu hides the list it exists to show. Time-bounded
+        -- buckets render in full; the dateless backlog shows its top of the
+        -- urgency ranking with an explicit "more" row. Only completion history
+        -- stays one level away.
         local sections = {
             { tasks = overdue, title = "Overdue" },
             { tasks = today, title = "Today" },
             { tasks = thisWeek, title = "This Week" },
-            { tasks = others, title = "Later" }
+            { tasks = others, title = "Later", limit = config.menuLimits.later }
         }
 
         for _, section in ipairs(sections) do
@@ -679,7 +683,8 @@ function obsidianTodos.buildMenu()
                 obsidianTodos.addMenuSection(
                     menu,
                     section.title .. " (" .. #tasks .. ")",
-                    tasks
+                    tasks,
+                    section.limit
                 )
             end
         end
@@ -978,7 +983,7 @@ function obsidianTodos.addMenuSection(menu, title, tasks, maxShow)
 
     if #tasks > limit then
         table.insert(menu, buildObsidianSearchItem(
-            "   Open All Pending Tasks in Obsidian",
+            string.format("   … %d more — open all in Obsidian", #tasks - limit),
             "task-todo:/./"
         ))
     end
