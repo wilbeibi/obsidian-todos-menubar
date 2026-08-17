@@ -630,6 +630,39 @@ local function buildObsidianSearchItem(title, query)
     }
 end
 
+-- AppKit picks a submenu's side by available room, preferring the menu's
+-- right edge. The menu hangs left-aligned under the icon, so the cursor
+-- arrives at its left edge — a right-opening submenu costs a traverse of the
+-- widest row. Padding the menu until its right edge nears the screen's edge
+-- leaves no room there, so every submenu opens left, beside the cursor.
+local function submenuFlipPadding(baseTitle, style)
+    if not menubar then return "" end
+    local ok, iconFrame = pcall(function() return menubar:frame() end)
+    if not ok or not iconFrame then return "" end
+    local screenFrame
+    for _, s in ipairs(hs.screen.allScreens()) do
+        local f = s:fullFrame()
+        if iconFrame.x >= f.x and iconFrame.x < f.x + f.w then
+            screenFrame = f
+            break
+        end
+    end
+    if not screenFrame then
+        screenFrame = hs.screen.primaryScreen():fullFrame()
+    end
+    -- Slack keeps the menu narrow enough to stay put under the icon; any
+    -- remaining gap smaller than a submenu's width still forces the flip.
+    local target = (screenFrame.x + screenFrame.w) - iconFrame.x - 60
+    local base = hs.drawing.getTextDrawingSize(hs.styledtext.new(baseTitle, style))
+    if not base or base.w >= target then return "" end
+    -- NBSP rather than space: trailing plain spaces may not count toward width
+    local nbsp = "\u{00A0}"
+    local probe = hs.drawing.getTextDrawingSize(
+        hs.styledtext.new(string.rep(nbsp, 100), style))
+    if not probe or probe.w <= 0 then return "" end
+    return string.rep(nbsp, math.ceil((target - base.w) / (probe.w / 100)))
+end
+
 function obsidianTodos.buildMenu()
     local menu = {}
 
@@ -725,12 +758,18 @@ function obsidianTodos.buildMenu()
     table.insert(menu, { title = "-" })
 
     -- The modifiers are otherwise invisible: nothing on a row hints that the
-    -- submenu can be skipped. State them once, quietly.
+    -- submenu can be skipped. State them once, quietly. This row also carries
+    -- the invisible padding that keeps submenus opening leftward.
+    local captionTitle = "   Click to open  ·  ⌥ done  ·  ⌘ tomorrow"
+    local captionStyle = {
+        color = {list = "System", name = "secondaryLabelColor"},
+        font = {name = ".AppleSystemUIFont", size = 11}
+    }
     table.insert(menu, {
-        title = hs.styledtext.new("   Click to open  ·  ⌥ done  ·  ⌘ tomorrow", {
-            color = {list = "System", name = "secondaryLabelColor"},
-            font = {name = ".AppleSystemUIFont", size = 11}
-        }),
+        title = hs.styledtext.new(
+            captionTitle .. submenuFlipPadding(captionTitle, captionStyle),
+            captionStyle
+        ),
         disabled = true
     })
 
