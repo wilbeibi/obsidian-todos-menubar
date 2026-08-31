@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to ~/.hammerspoon/obsidian-todos.json (or point $OBSIDIAN_TODOS_CONFIG at it). Per-machine: not synced with the vault. All keys optional.",
+
+  "vaultPath": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
+
+  "includeFolders": [],
+
+  "excludeFolders": ["Archive", "Templates"]
+}

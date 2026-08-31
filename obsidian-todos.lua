@@ -28,10 +28,45 @@ local function shQuote(s)
     return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
+-- Per-machine settings live in a JSON file outside this repo, so two machines
+-- sharing one synced vault can scope the scan differently without carrying a
+-- local diff. Absent or malformed, every key falls back to its default.
+--
+--   ~/.hammerspoon/obsidian-todos.json  (or $OBSIDIAN_TODOS_CONFIG)
+--   { "vaultPath": "/path/to/Vault", "includeFolders": ["WorkJournal"],
+--     "excludeFolders": ["Archive", "Templates"] }
+--
+-- The one env var points at the file; it never carries the settings themselves.
+local USER_CONFIG_PATH = os.getenv("OBSIDIAN_TODOS_CONFIG")
+    or ((os.getenv("HOME") or "") .. "/.hammerspoon/obsidian-todos.json")
+
+local function expandTilde(path)
+    if type(path) == 'string' and path:sub(1, 1) == '~' then
+        return (os.getenv('HOME') or '') .. path:sub(2)
+    end
+    return path
+end
+
+local function loadUserConfig()
+    USER_CONFIG_PATH = expandTilde(USER_CONFIG_PATH)
+    if not (hs and hs.fs and hs.fs.attributes(USER_CONFIG_PATH, "mode") == "file") then
+        return {}
+    end
+    local ok, data = pcall(hs.json.read, USER_CONFIG_PATH)
+    if not ok or type(data) ~= 'table' then
+        print("[Obsidian TODOs] ignoring unreadable config: " .. USER_CONFIG_PATH)
+        return {}
+    end
+    return data
+end
+
+local userConfig = loadUserConfig()
+
 -- Resolve the vault path with overrides in this order:
 -- 1) hs.settings.get('obsidianTodos.vaultPath')
--- 2) Environment variables OBSIDIAN_TODOS_VAULT, OBSIDIAN_VAULT_PATH, or OBSIDIAN_VAULT_ROOT
--- 3) Default iCloud Obsidian path
+-- 2) vaultPath in ~/.hammerspoon/obsidian-todos.json
+-- 3) Environment variables OBSIDIAN_TODOS_VAULT, OBSIDIAN_VAULT_PATH, or OBSIDIAN_VAULT_ROOT
+-- 4) Default iCloud Obsidian path
 local function resolveVaultPath()
     local defaultPath = (os.getenv("HOME") or "")
         .. "/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault"
@@ -41,17 +76,36 @@ local function resolveVaultPath()
         settingsPath = hs.settings.get('obsidianTodos.vaultPath')
     end
 
+    local filePath = type(userConfig.vaultPath) == 'string' and userConfig.vaultPath or nil
+
     local envPath = os.getenv('OBSIDIAN_TODOS_VAULT')
         or os.getenv('OBSIDIAN_VAULT_PATH')
         or os.getenv('OBSIDIAN_VAULT_ROOT')
-    local path = settingsPath or envPath or defaultPath
 
-    -- Expand ~ if present
-    if type(path) == 'string' and path:sub(1,1) == '~' then
-        path = (os.getenv('HOME') or '') .. path:sub(2)
+    return expandTilde(settingsPath or filePath or envPath or defaultPath)
+end
+
+-- Folders the scan never descends into, whatever the user configures: neither
+-- holds notes a person wrote, and dropping them from the exclude list would
+-- surface Obsidian's own plugin data as tasks.
+local ALWAYS_EXCLUDE_FOLDERS = { ".obsidian", ".trash" }
+local DEFAULT_EXCLUDE_FOLDERS = { "Archive", "Templates" }
+
+-- Scope entries are vault-relative folder paths ("WorkJournal", "Work/Notes"),
+-- anchored at the vault root. Anything absolute or escaping the vault is
+-- dropped rather than silently widening the scan.
+local function normalizeFolders(list)
+    local out = {}
+    if type(list) ~= 'table' then return out end
+    for _, entry in ipairs(list) do
+        if type(entry) == 'string' then
+            local folder = entry:gsub("^/+", ""):gsub("/+$", "")
+            if folder ~= "" and not folder:find("%.%.", 1, false) then
+                table.insert(out, folder)
+            end
+        end
     end
-
-    return path
+    return out
 end
 
 local config = {
@@ -59,10 +113,49 @@ local config = {
     vaultName = nil, -- Override auto-detection if needed
     menubarTitle = "☑︎",
     debounceDelay = 2,
+    -- Empty include list means the whole vault; otherwise only these folders
+    -- are scanned. Excludes are subtracted from whatever include selects.
+    includeFolders = normalizeFolders(userConfig.includeFolders or {}),
+    excludeFolders = normalizeFolders(userConfig.excludeFolders or DEFAULT_EXCLUDE_FOLDERS),
     -- Time-bounded buckets (Overdue/Today/This Week) are self-limiting and
     -- render uncapped; only the dateless backlog needs a preview cap.
     menuLimits = { later = 10, donePreview = 3, stalled = 5 }
 }
+
+-- Every vault scan shares one scope. Excluded folders become negative globs;
+-- included folders become rg search roots rather than positive globs, so rg
+-- never walks the rest of the vault and the two forms cannot disagree.
+local function scopeGlobs()
+    local parts = {}
+    for _, list in ipairs({ ALWAYS_EXCLUDE_FOLDERS, config.excludeFolders }) do
+        for _, folder in ipairs(list) do
+            table.insert(parts, "--glob " .. shQuote("!" .. folder .. "/**"))
+        end
+    end
+    return table.concat(parts, " ")
+end
+
+local function scopeRoots()
+    if #config.includeFolders == 0 then return "." end
+    local parts = {}
+    for _, folder in ipairs(config.includeFolders) do
+        table.insert(parts, shQuote("./" .. folder))
+    end
+    return table.concat(parts, " ")
+end
+
+-- Include folders that do not exist on disk: a typo here otherwise shows up
+-- only as a permanently empty menu.
+local function missingIncludeFolders()
+    local missing = {}
+    for _, folder in ipairs(config.includeFolders) do
+        local path = (config.vaultPath or "") .. "/" .. folder
+        if not (hs and hs.fs and hs.fs.attributes(path, "mode") == "directory") then
+            table.insert(missing, folder)
+        end
+    end
+    return missing
+end
 
 local IGNORE_FRONTMATTER_KEY = "obsidian-todos-ignore"
 
@@ -220,8 +313,30 @@ local function applyLineEdit(task, transformFn)
     return ok
 end
 
+-- Vault-relative form of an absolute path, or nil if it lies outside the vault
+local function vaultRelative(p)
+    local prefix = (config.vaultPath or "") .. "/"
+    if p:sub(1, #prefix) == prefix then return p:sub(#prefix + 1) end
+    return nil
+end
+
+-- Out-of-scope by the same rules the rg scan uses, so a watcher event and a
+-- scan can never disagree about which notes count.
 local function isIgnoredPath(p)
-    return p:find("/%.obsidian/") or p:find("/Archive/") or p:find("/Templates/") or p:find("/%.trash/")
+    local rel = vaultRelative(p)
+    if not rel then return true end
+
+    for _, list in ipairs({ ALWAYS_EXCLUDE_FOLDERS, config.excludeFolders }) do
+        for _, folder in ipairs(list) do
+            if rel == folder or rel:sub(1, #folder + 1) == folder .. "/" then return true end
+        end
+    end
+
+    if #config.includeFolders == 0 then return false end
+    for _, folder in ipairs(config.includeFolders) do
+        if rel:sub(1, #folder + 1) == folder .. "/" then return false end
+    end
+    return true
 end
 
 local function findIgnoredNotes()
@@ -233,12 +348,9 @@ local function findIgnoredNotes()
         "--no-config",
         "--files-with-matches",
         "--glob '*.md'",
-        "--glob '!Archive/**'",
-        "--glob '!.obsidian/**'",
-        "--glob '!Templates/**'",
-        "--glob '!.trash/**'",
+        scopeGlobs(),
         "'^\\s*obsidian-todos-ignore:\\s*[\\x27\\x22]?true[\\x27\\x22]?\\s*$'",
-        ".",
+        scopeRoots(),
         "2>/dev/null"
     }
     local handle = io.popen(table.concat(cmdParts, " "))
@@ -549,12 +661,9 @@ function obsidianTodos.scanVault()
         "--no-heading",
         "--with-filename",
         "--line-number",
-        "--glob '!Archive/**'",
-        "--glob '!.obsidian/**'",
-        "--glob '!Templates/**'",
-        "--glob '!.trash/**'",
+        scopeGlobs(),
         pattern,
-        ".",
+        scopeRoots(),
         "2>/dev/null"
     }
 
@@ -634,6 +743,18 @@ end
 
 function obsidianTodos.buildMenu()
     local menu = {}
+
+    -- An include folder that does not exist reads as an empty vault; name it
+    -- rather than letting the menu look merely quiet.
+    local missingScope = missingIncludeFolders()
+    if #missingScope > 0 then
+        table.insert(menu, {
+            title = "Configured folder not in vault: " .. table.concat(missingScope, ", "),
+            disabled = true
+        })
+        table.insert(menu, {title = USER_CONFIG_PATH, disabled = true})
+        table.insert(menu, {title = "-"})
+    end
 
     if #cachedTasks == 0 then
         table.insert(menu, {title = "No pending tasks found!", disabled = true})
@@ -1069,12 +1190,24 @@ local function getVaultName()
     return config.vaultPath:match("([^/]+)$") or "Vault"
 end
 
+-- Obsidian search syntax for the configured include folders, so the "see all"
+-- links land on the same set of notes the menu counted.
+local function scopeQueryPrefix()
+    if #config.includeFolders == 0 then return "" end
+    local parts = {}
+    for _, folder in ipairs(config.includeFolders) do
+        table.insert(parts, string.format('path:"%s/"', folder))
+    end
+    if #parts == 1 then return parts[1] .. " " end
+    return "(" .. table.concat(parts, " OR ") .. ") "
+end
+
 function obsidianTodos.openSearchInObsidian(query)
     local q = function(s) return hs.http.encodeForQuery(s or "") end
     local uri = string.format(
         "obsidian://search?vault=%s&query=%s",
         q(getVaultName()),
-        q(query)
+        q(scopeQueryPrefix() .. (query or ""))
     )
     hs.urlevent.openURL(uri)
 end
@@ -1193,6 +1326,14 @@ function obsidianTodos.init()
     if not menubar then
         print("Failed to create Obsidian TODOs menubar")
         return
+    end
+
+    -- A configured include folder that does not exist scans to nothing, which
+    -- is indistinguishable from an empty vault unless it is called out.
+    local missing = missingIncludeFolders()
+    if #missing > 0 then
+        print("[Obsidian TODOs] includeFolders not found in vault: "
+            .. table.concat(missing, ", ") .. " (" .. USER_CONFIG_PATH .. ")")
     end
 
     -- Validate vault path before wiring the watcher
