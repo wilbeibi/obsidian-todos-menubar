@@ -676,17 +676,13 @@ function obsidianTodos.scanVault()
         "2>/dev/null"
     }
 
+    local allTasks = {}
     local handle = io.popen(table.concat(cmdParts, " "))
     if handle then
         for line in handle:lines() do
             local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
             if filePath and lineNumber and taskText then
-                local task = parseTask(filePath, tonumber(lineNumber), taskText)
-                -- Hide tasks snoozed into the future or in ignored notes
-                if not ignoredNotes[task.path]
-                    and not (task.snoozeUntil and task.snoozeUntil > now) then
-                    table.insert(tasks, task)
-                end
+                table.insert(allTasks, parseTask(filePath, tonumber(lineNumber), taskText))
             end
         end
         handle:close()
@@ -696,17 +692,18 @@ function obsidianTodos.scanVault()
     -- file. The urgency buckets scatter a family across the menu, so a child
     -- carries its parent's text as context rather than the menu regrouping
     -- them (a child due today must stay in Today even when its parent is
-    -- backlog). Only checkbox parents are visible to this pass: a task nested
-    -- under a plain bullet stays top-level, and an intervening paragraph
-    -- between two lists can false-link — accepted, this is context, not truth.
-    local byLine = {}
-    for _, t in ipairs(tasks) do byLine[#byLine + 1] = t end
-    table.sort(byLine, function(a, b)
+    -- backlog). Runs over every parsed task, before the visibility filter: a
+    -- snoozed parent is hidden from the menu but must still anchor its
+    -- children, or they would false-link to whatever shallower line precedes
+    -- it. Only checkbox parents are visible to this pass: a task nested under
+    -- a plain bullet stays top-level, and an intervening paragraph between
+    -- two lists can still false-link — accepted, this is context, not truth.
+    table.sort(allTasks, function(a, b)
         if a.path ~= b.path then return a.path < b.path end
         return a.line < b.line
     end)
     local stack, prevPath = {}, nil
-    for _, t in ipairs(byLine) do
+    for _, t in ipairs(allTasks) do
         if t.path ~= prevPath then
             stack, prevPath = {}, t.path
         end
@@ -715,6 +712,14 @@ function obsidianTodos.scanVault()
         end
         if #stack > 0 then t.parentText = stack[#stack].text end
         table.insert(stack, t)
+    end
+
+    -- Hide tasks snoozed into the future or in ignored notes
+    for _, task in ipairs(allTasks) do
+        if not ignoredNotes[task.path]
+            and not (task.snoozeUntil and task.snoozeUntil > now) then
+            table.insert(tasks, task)
+        end
     end
 
     -- Sort by weighted score (higher score = higher priority)
@@ -1091,11 +1096,18 @@ local function buildTaskMenuItem(task)
 
     -- A sub-task names its parent inline — "child → parent" — because the
     -- urgency buckets separate the two and a bare child line loses its
-    -- meaning ("draft the intro" of what?). Kept short; the tooltip carries
-    -- the full text of both.
-    local label = displayLabel(task)
+    -- meaning ("draft the intro" of what?). The breadcrumb must not raise
+    -- the row-width cap: the widest row sets the whole menu's width, and a
+    -- wider menu lengthens the steering pass to every row's submenu. A plain
+    -- label's worst case is 24+15+4 = 43 columns (truncateColumns keeps text
+    -- whole up to head+tail+4); child 16+6+4 = 26, arrow 5, parent 8+4 = 12
+    -- lands on the same 43. The tooltip carries the full text of both.
+    local label
     if task.parentText then
-        label = label .. "  →  " .. truncateColumns(cleanDisplayText(task.parentText), 12, 0)
+        label = truncateColumns(cleanDisplayText(task.text), 16, 6)
+            .. "  →  " .. truncateColumns(cleanDisplayText(task.parentText), 8, 0)
+    else
+        label = displayLabel(task)
     end
 
     local parts = {}
