@@ -66,10 +66,12 @@ Priorities `🔺⏫🔼🔽⏬` weight the sort order. A bare `YYYY-MM-DD` also 
 - The menubar shows one tier at a time: overdue if any, else today, else this week, else the backlog. The hover tooltip breaks down overdue, today, and this week.
 - Overdue and Today stay inline. This Week, Later, and Recently Done collapse into submenus, each ending in an Obsidian search link for the full list.
 - Rows are rendered the way Obsidian renders them: date markers become `Aug 8` or `today`, links become their label, and `!` marks the two highest priorities. In-progress tasks are greyed. The raw line in your note is untouched.
-- Each task's submenu holds **Mark Done**, **Start**, **Schedule…** (Due Tomorrow, Due in 7 Days, Snooze 1 Week, which lands on a weekday), and **More…** (Cancel Task, Ignore All Tasks in This Note).
+- Hovering a row for a moment shows everything the row truncated: the full task text, its parent, the note path and line, the dates, and the modifier gestures.
+- A sub-task (a checkbox indented under another checkbox) names its parent inline as `child → parent`, since urgency sorting can strand it far from its context.
+- Each task's submenu is one flat list — **Mark Done**, **Start**, then Due Tomorrow / Due in 7 Days / Snooze 1 Week (which lands on a weekday), then **Cancel Task** and **Ignore All Tasks in This Note**. No nested menus: reaching a submenu already costs a full-width steering pass, so nothing hides a second level down.
 - Actions write Tasks-plugin markers into the note: done appends `✅ 2026-08-11`, start `⏳`, cancel `❌`, snooze `🛫 2026-08-18`.
-- **Stalled Review** appears at the top when a task has sat 8+ days past due, or 15+ past scheduled. Its submenu offers finish, rewrite, or cancel; deferring is still possible, but only through **Defer Anyway…**.
-- Clicking a task opens it in Obsidian. Saving any note refreshes the menu about 2 seconds later; `Refresh` exists for impatience.
+- **Stalled Review** appears at the top when a task has sat 8+ days past due, or 15+ past scheduled. Its actions lead with finish, rewrite, or cancel; deferring is still possible, under the **Defer Anyway** heading.
+- Clicking a task opens it in Obsidian — the bare click never writes. With the menu open, typing jumps to a matching row (native type-select). Saving any note refreshes the menu about 2 seconds later; `Refresh` exists for impatience.
 
 ## Configuration
 

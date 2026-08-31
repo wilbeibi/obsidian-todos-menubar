@@ -445,6 +445,13 @@ local function parseTask(filePath, lineNumber, taskText)
 
     local fileName = relPath:match("([^/]+)%.md$") or relPath:match("([^/]+)$")
 
+    -- Indent depth of the raw line in columns (tab = 4). Compared between
+    -- lines of one file to link sub-tasks to parents; never displayed.
+    local indent = 0
+    for c in taskText:match("^([ \t]*)"):gmatch(".") do
+        indent = indent + (c == "\t" and 4 or 1)
+    end
+
     -- Bare task text without the checkbox prefix (see stripCheckbox)
     local cleanText = stripCheckbox(taskText)
 
@@ -462,6 +469,8 @@ local function parseTask(filePath, lineNumber, taskText)
         file = fileName,
         line = lineNumber,
         text = cleanText,
+        indent = indent,
+        parentText = nil,
         status = status,
         dueDate = nil,
         snoozeUntil = nil,
@@ -667,20 +676,50 @@ function obsidianTodos.scanVault()
         "2>/dev/null"
     }
 
+    local allTasks = {}
     local handle = io.popen(table.concat(cmdParts, " "))
     if handle then
         for line in handle:lines() do
             local filePath, lineNumber, taskText = line:match("^([^:]+):(%d+):(.+)$")
             if filePath and lineNumber and taskText then
-                local task = parseTask(filePath, tonumber(lineNumber), taskText)
-                -- Hide tasks snoozed into the future or in ignored notes
-                if not ignoredNotes[task.path]
-                    and not (task.snoozeUntil and task.snoozeUntil > now) then
-                    table.insert(tasks, task)
-                end
+                table.insert(allTasks, parseTask(filePath, tonumber(lineNumber), taskText))
             end
         end
         handle:close()
+    end
+
+    -- Link sub-tasks to the nearest shallower checkbox above them in the same
+    -- file. The urgency buckets scatter a family across the menu, so a child
+    -- carries its parent's text as context rather than the menu regrouping
+    -- them (a child due today must stay in Today even when its parent is
+    -- backlog). Runs over every parsed task, before the visibility filter: a
+    -- snoozed parent is hidden from the menu but must still anchor its
+    -- children, or they would false-link to whatever shallower line precedes
+    -- it. Only checkbox parents are visible to this pass: a task nested under
+    -- a plain bullet stays top-level, and an intervening paragraph between
+    -- two lists can still false-link — accepted, this is context, not truth.
+    table.sort(allTasks, function(a, b)
+        if a.path ~= b.path then return a.path < b.path end
+        return a.line < b.line
+    end)
+    local stack, prevPath = {}, nil
+    for _, t in ipairs(allTasks) do
+        if t.path ~= prevPath then
+            stack, prevPath = {}, t.path
+        end
+        while #stack > 0 and stack[#stack].indent >= t.indent do
+            table.remove(stack)
+        end
+        if #stack > 0 then t.parentText = stack[#stack].text end
+        table.insert(stack, t)
+    end
+
+    -- Hide tasks snoozed into the future or in ignored notes
+    for _, task in ipairs(allTasks) do
+        if not ignoredNotes[task.path]
+            and not (task.snoozeUntil and task.snoozeUntil > now) then
+            table.insert(tasks, task)
+        end
     end
 
     -- Sort by weighted score (higher score = higher priority)
@@ -858,33 +897,36 @@ function obsidianTodos.buildMenu()
     return menu
 end
 
-local function buildScheduleMenu(task)
-    return {
-        { title = "Due Tomorrow", fn = function() obsidianTodos.markTaskDueTomorrow(task) end },
-        { title = "Due in 7 Days", fn = function() obsidianTodos.markTaskDueIn7Days(task) end },
-        { title = "Snooze 1 Week", fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end }
-    }
-end
-
+-- One level, no nesting. Reaching this submenu already cost a full-width
+-- steering pass (see buildTaskMenuItem); a second tunnel to a Schedule… or
+-- More… child menu doubles that price for a list of barely eight rows.
+-- Everything sits flat, ordered by frequency, separators marking the tiers.
 local function buildTaskActionMenu(task)
     if task.status == "x" then return nil end
 
+    local function scheduleItems(actions)
+        table.insert(actions, { title = "Due Tomorrow", fn = function() obsidianTodos.markTaskDueTomorrow(task) end })
+        table.insert(actions, { title = "Due in 7 Days", fn = function() obsidianTodos.markTaskDueIn7Days(task) end })
+        table.insert(actions, { title = "Snooze 1 Week", fn = function() obsidianTodos.markTaskSnoozeOneWeek(task) end })
+    end
+
     if task.stalled then
-        return {
+        -- Deferring a stalled task is meant to be deliberate; the friction of
+        -- the old Defer Anyway… submenu is now just the labelled section.
+        local actions = {
             { title = "Mark Done", fn = function() obsidianTodos.markTaskDone(task) end },
             { title = "Open to Rewrite", fn = function() obsidianTodos.openTaskInObsidian(task) end },
             { title = "Cancel Task", fn = function() obsidianTodos.markTaskCancelled(task) end },
-            { title = "Defer Anyway…", menu = buildScheduleMenu(task) },
-            {
-                title = "More…",
-                menu = {
-                    {
-                        title = "Ignore All Tasks in This Note",
-                        fn = function() obsidianTodos.ignoreTodosInNote(task) end
-                    }
-                }
-            }
+            { title = "-" },
+            { title = "Defer Anyway", disabled = true }
         }
+        scheduleItems(actions)
+        table.insert(actions, { title = "-" })
+        table.insert(actions, {
+            title = "Ignore All Tasks in This Note",
+            fn = function() obsidianTodos.ignoreTodosInNote(task) end
+        })
+        return actions
     end
 
     local actions = {
@@ -896,16 +938,13 @@ local function buildTaskActionMenu(task)
             fn = function() obsidianTodos.markTaskInProgress(task) end
         })
     end
-    table.insert(actions, { title = "Schedule…", menu = buildScheduleMenu(task) })
+    table.insert(actions, { title = "-" })
+    scheduleItems(actions)
+    table.insert(actions, { title = "-" })
+    table.insert(actions, { title = "Cancel Task", fn = function() obsidianTodos.markTaskCancelled(task) end })
     table.insert(actions, {
-        title = "More…",
-        menu = {
-            { title = "Cancel Task", fn = function() obsidianTodos.markTaskCancelled(task) end },
-            {
-                title = "Ignore All Tasks in This Note",
-                fn = function() obsidianTodos.ignoreTodosInNote(task) end
-            }
-        }
+        title = "Ignore All Tasks in This Note",
+        fn = function() obsidianTodos.ignoreTodosInNote(task) end
     })
     return actions
 end
@@ -969,9 +1008,10 @@ end
 -- Strip the Tasks-plugin metadata that belongs in the note but only adds noise
 -- in a menu: the date markers and their dates, priority glyphs, and the
 -- Dataview/TaskPaper spellings of the same fields. task.text keeps the raw line
--- (edits match against it); this is display only.
-local function displayLabel(task)
-    local text = task.text or ""
+-- (edits match against it); this is display only. Untruncated — callers pick
+-- their own column budget.
+local function cleanDisplayText(text)
+    text = text or ""
 
     for _, emoji in pairs(PRIORITY_EMOJIS) do
         text = text:gsub(emoji, "")
@@ -999,7 +1039,11 @@ local function displayLabel(task)
 
     text = text:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
 
-    return truncateColumns(text, 24, 15)
+    return text
+end
+
+local function displayLabel(task)
+    return truncateColumns(cleanDisplayText(task.text), 24, 15)
 end
 
 -- The date a row is filed under, written the way a person would say it.
@@ -1050,6 +1094,22 @@ local function buildTaskMenuItem(task)
     -- One marker, only where it changes what you do next: high priority.
     local marker = (task.priority and task.priority <= 2) and "! " or ""
 
+    -- A sub-task names its parent inline — "child → parent" — because the
+    -- urgency buckets separate the two and a bare child line loses its
+    -- meaning ("draft the intro" of what?). The breadcrumb must not raise
+    -- the row-width cap: the widest row sets the whole menu's width, and a
+    -- wider menu lengthens the steering pass to every row's submenu. A plain
+    -- label's worst case is 24+15+4 = 43 columns (truncateColumns keeps text
+    -- whole up to head+tail+4); child 16+6+4 = 26, arrow 5, parent 8+4 = 12
+    -- lands on the same 43. The tooltip carries the full text of both.
+    local label
+    if task.parentText then
+        label = truncateColumns(cleanDisplayText(task.text), 16, 6)
+            .. "  →  " .. truncateColumns(cleanDisplayText(task.parentText), 8, 0)
+    else
+        label = displayLabel(task)
+    end
+
     local parts = {}
     local dateLabel = displayDate(task)
     if dateLabel then parts[#parts + 1] = dateLabel end
@@ -1059,7 +1119,7 @@ local function buildTaskMenuItem(task)
         parts[#parts + 1] = truncateColumns(noteLabel, 13, 6)
     end
 
-    local title = "   " .. marker .. displayLabel(task)
+    local title = "   " .. marker .. label
     if #parts > 0 then
         title = title .. "  ·  " .. table.concat(parts, "  ·  ")
     end
@@ -1099,6 +1159,27 @@ local function buildTaskMenuItem(task)
         end
     }
     item.menu = buildTaskActionMenu(task)
+
+    -- The row truncates; the tooltip does not. Everything the row had to cut
+    -- — full text, parent, source line, dates — surfaces on hover, plus the
+    -- modifier gestures, which are otherwise invisible exactly when a hand
+    -- is hovering over the row deciding what to do.
+    local tip = { cleanDisplayText(task.text) }
+    if task.parentText then
+        tip[#tip + 1] = "→ " .. cleanDisplayText(task.parentText)
+    end
+    if task.relativePath then
+        tip[#tip + 1] = task.relativePath .. ":" .. tostring(task.line)
+    end
+    local dates = {}
+    if task.dueDate then dates[#dates + 1] = "due " .. os.date("%Y-%m-%d", task.dueDate) end
+    if task.scheduledDate then dates[#dates + 1] = "scheduled " .. os.date("%Y-%m-%d", task.scheduledDate) end
+    if #dates > 0 then tip[#tip + 1] = table.concat(dates, " · ") end
+    if task.status ~= "x" then
+        tip[#tip + 1] = "click open · ⌥ done · ⌘ tomorrow"
+    end
+    item.tooltip = table.concat(tip, "\n")
+
     return item
 end
 
