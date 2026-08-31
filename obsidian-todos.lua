@@ -1293,32 +1293,49 @@ function obsidianTodos.openSearchInObsidian(query)
     hs.urlevent.openURL(uri)
 end
 
--- Detect if the Advanced URI plugin is installed in this vault
+-- Detect whether the Advanced URI plugin is *enabled* in this vault.
+--
+-- Checking only that the plugin folder exists is not enough: Obsidian Sync can
+-- deliver a plugin's files to a device where it was never enabled, and a
+-- disabled plugin ignores its URIs silently. community-plugins.json is the
+-- enabled list, so it is the only reliable signal.
 local function hasAdvancedURIPlugin()
-    local pluginPath = (config.vaultPath or "") .. "/.obsidian/plugins/obsidian-advanced-uri"
-    local attr = hs and hs.fs and hs.fs.attributes(pluginPath)
-    return attr and attr.mode == 'directory'
+    local listPath = (config.vaultPath or "") .. "/.obsidian/community-plugins.json"
+    local file = io.open(listPath, "r")
+    if not file then return false end
+    local body = file:read("*a")
+    file:close()
+    return body ~= nil and body:find('"obsidian-advanced-uri"', 1, true) ~= nil
 end
 
--- Open task in Obsidian with fallback chain
+-- Open the task's note in Obsidian, then position the cursor if possible
 function obsidianTodos.openTaskInObsidian(task)
     local q = function(s) return hs.http.encodeForQuery(s or "") end
     local vaultName = getVaultName()
     local relPath = task.relativePath or task.file -- prefer vault-relative path with extension
 
-    -- Prefer basic Obsidian URI unless Advanced URI plugin is present
+    -- Open with the basic URI first. hs.urlevent.openURL returns true once
+    -- macOS has handed the URL to Obsidian -- it says nothing about whether
+    -- Obsidian or a plugin then handled it. So a `return` guarded by that
+    -- value is not a fallback chain: an Advanced URI that fails still reports
+    -- success, and the basic URI it was supposed to fall back to never fires.
+    -- Opening the note is the part that must not depend on a plugin.
+    local basic = string.format("obsidian://open?vault=%s&file=%s", q(vaultName), q(relPath))
+    local opened = hs.urlevent.openURL(basic)
+    if not opened then
+        hs.execute('open -a "Obsidian" ' .. shQuote(task.path))
+    end
+
+    -- Then ask Advanced URI to put the cursor on the task's line. The note is
+    -- already open at this point, so if the plugin errors the click still did
+    -- the useful thing; only line positioning is lost.
     if hasAdvancedURIPlugin() then
         local adv = string.format(
             "obsidian://advanced-uri?vault=%s&filepath=%s&line=%d",
             q(vaultName), q(relPath), tonumber(task.line) or 1
         )
-        if hs.urlevent.openURL(adv) then return end
+        hs.urlevent.openURL(adv)
     end
-
-    local basic = string.format("obsidian://open?vault=%s&file=%s", q(vaultName), q(relPath))
-    if hs.urlevent.openURL(basic) then return end
-
-    hs.execute('open -a "Obsidian" ' .. shQuote(task.path))
 end
 
 -- Helper to update a task status (done, in progress, cancelled)
