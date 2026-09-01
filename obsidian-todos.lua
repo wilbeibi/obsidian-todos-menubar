@@ -34,7 +34,8 @@ end
 --
 --   ~/.hammerspoon/obsidian-todos.json  (or $OBSIDIAN_TODOS_CONFIG)
 --   { "vaultPath": "/path/to/Vault", "includeFolders": ["WorkJournal"],
---     "excludeFolders": ["Archive", "Templates"] }
+--     "excludeFolders": ["Archive", "Templates"],
+--     "excludeTags": ["#agent-todo"] }
 --
 -- The one env var points at the file; it never carries the settings themselves.
 local USER_CONFIG_PATH = os.getenv("OBSIDIAN_TODOS_CONFIG")
@@ -108,6 +109,22 @@ local function normalizeFolders(list)
     return out
 end
 
+-- Tag entries are stored bare and lowercased ("#Agent-Todo" -> "agent-todo"):
+-- Obsidian ignores case when matching a tag, and a tag cannot contain spaces.
+local function normalizeTags(list)
+    local out = {}
+    if type(list) ~= 'table' then return out end
+    for _, entry in ipairs(list) do
+        if type(entry) == 'string' then
+            local tag = entry:gsub("^%s+", ""):gsub("%s+$", ""):gsub("^#+", "")
+            if tag ~= "" and not tag:find("%s") then
+                table.insert(out, tag:lower())
+            end
+        end
+    end
+    return out
+end
+
 local config = {
     vaultPath = resolveVaultPath(),
     vaultName = nil, -- Override auto-detection if needed
@@ -117,6 +134,9 @@ local config = {
     -- are scanned. Excludes are subtracted from whatever include selects.
     includeFolders = normalizeFolders(userConfig.includeFolders or {}),
     excludeFolders = normalizeFolders(userConfig.excludeFolders or DEFAULT_EXCLUDE_FOLDERS),
+    -- Tasks carrying any of these tags never reach the menu, whatever folder
+    -- they live in.
+    excludeTags = normalizeTags(userConfig.excludeTags or {}),
     -- Time-bounded buckets (Overdue/Today/This Week) are self-limiting and
     -- render uncapped; only the dateless backlog needs a preview cap.
     menuLimits = { later = 10, donePreview = 3, stalled = 5 }
@@ -339,6 +359,31 @@ local function isIgnoredPath(p)
     return true
 end
 
+-- Does this task line carry one of the ignored tags? Follows Obsidian's own
+-- tag semantics: case-insensitive, and a parent tag also matches its nested
+-- children (#agent-todo matches #agent-todo/sub), while a longer tag that
+-- merely starts the same (#agent-todos) does not. A "#" glued to preceding
+-- text is not a tag, so URL fragments never match.
+local function hasExcludedTag(text)
+    if #config.excludeTags == 0 then return false end
+    local lower = text:lower()
+    for _, tag in ipairs(config.excludeTags) do
+        local needle = "#" .. tag
+        local from = 1
+        while true do
+            local s, e = lower:find(needle, from, true)  -- plain find: tags contain "-"
+            if not s then break end
+            local before = s > 1 and lower:sub(s - 1, s - 1) or ""
+            local after = lower:sub(e + 1, e + 1)
+            if not before:match("[%w_/#%-]") and not after:match("[%w_%-]") then
+                return true
+            end
+            from = s + 1
+        end
+    end
+    return false
+end
+
 local function findIgnoredNotes()
     local ignored = {}
     local cmdParts = {
@@ -471,6 +516,7 @@ local function parseTask(filePath, lineNumber, taskText)
         text = cleanText,
         indent = indent,
         parentText = nil,
+        tagExcluded = false,
         status = status,
         dueDate = nil,
         snoozeUntil = nil,
@@ -711,12 +757,18 @@ function obsidianTodos.scanVault()
             table.remove(stack)
         end
         if #stack > 0 then t.parentText = stack[#stack].text end
+        -- An ignored tag hides the whole sub-tree: the tag is written once on
+        -- the parent, and its sub-tasks are parts of that same item.
+        t.tagExcluded = hasExcludedTag(t.text)
+            or (#stack > 0 and stack[#stack].tagExcluded) or false
         table.insert(stack, t)
     end
 
-    -- Hide tasks snoozed into the future or in ignored notes
+    -- Hide tasks snoozed into the future, in ignored notes, or carrying an
+    -- ignored tag
     for _, task in ipairs(allTasks) do
         if not ignoredNotes[task.path]
+            and not task.tagExcluded
             and not (task.snoozeUntil and task.snoozeUntil > now) then
             table.insert(tasks, task)
         end
@@ -1271,16 +1323,21 @@ local function getVaultName()
     return config.vaultPath:match("([^/]+)$") or "Vault"
 end
 
--- Obsidian search syntax for the configured include folders, so the "see all"
--- links land on the same set of notes the menu counted.
+-- Obsidian search syntax for the configured include folders and ignored tags,
+-- so the "see all" links land on the same set the menu counted.
 local function scopeQueryPrefix()
-    if #config.includeFolders == 0 then return "" end
-    local parts = {}
-    for _, folder in ipairs(config.includeFolders) do
-        table.insert(parts, string.format('path:"%s/"', folder))
+    local prefix = ""
+    if #config.includeFolders > 0 then
+        local parts = {}
+        for _, folder in ipairs(config.includeFolders) do
+            table.insert(parts, string.format('path:"%s/"', folder))
+        end
+        prefix = (#parts == 1 and parts[1] or ("(" .. table.concat(parts, " OR ") .. ")")) .. " "
     end
-    if #parts == 1 then return parts[1] .. " " end
-    return "(" .. table.concat(parts, " OR ") .. ") "
+    for _, tag in ipairs(config.excludeTags) do
+        prefix = prefix .. string.format('-tag:#%s ', tag)
+    end
+    return prefix
 end
 
 function obsidianTodos.openSearchInObsidian(query)

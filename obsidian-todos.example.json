@@ -5,5 +5,7 @@
 
   "includeFolders": [],
 
-  "excludeFolders": ["Archive", "Templates"]
+  "excludeFolders": ["Archive", "Templates"],
+
+  "excludeTags": []
 }

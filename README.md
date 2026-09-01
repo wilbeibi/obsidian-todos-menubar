@@ -81,7 +81,8 @@ Settings live in a JSON file, not in the script. Every key is optional:
 {
   "vaultPath": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
   "includeFolders": ["WorkJournal"],
-  "excludeFolders": ["Archive", "Templates"]
+  "excludeFolders": ["Archive", "Templates"],
+  "excludeTags": ["#agent-todo"]
 }
 ```
 
@@ -92,7 +93,9 @@ Because the file sits outside the vault and outside this repo, two machines sync
 - **`includeFolders`** — vault-relative folders to scan. Omit or leave empty for the whole vault.
 - **`excludeFolders`** — folders to skip, subtracted from whatever `includeFolders` selected. Defaults to `["Archive", "Templates"]`; setting it replaces that default. `.obsidian/` and `.trash/` are always skipped.
 
-Both are vault-relative paths anchored at the vault root, so `"Archive"` skips `<vault>/Archive/` but not `<vault>/WorkJournal/Archive/` — name the nested path to skip that. Entries that are absolute or contain `..` are ignored. An `includeFolders` entry that does not exist in the vault is named at the top of the menu, since it would otherwise just look like an empty vault.
+- **`excludeTags`** — tags that hide a task wherever it lives. Empty by default. The leading `#` is optional and case is ignored, so `"agent-todo"` and `"#Agent-Todo"` are the same entry. A parent tag also hides its nested tags (`#agent-todo` hides `#agent-todo/sub`), and hiding a task hides its sub-tasks with it — the tag is normally written once, on the parent line.
+
+Both folder keys are vault-relative paths anchored at the vault root, so `"Archive"` skips `<vault>/Archive/` but not `<vault>/WorkJournal/Archive/` — name the nested path to skip that. Entries that are absolute or contain `..` are ignored. An `includeFolders` entry that does not exist in the vault is named at the top of the menu, since it would otherwise just look like an empty vault.
 
 Vault path resolution order: `hs.settings.get('obsidianTodos.vaultPath')`, then `vaultPath` in the JSON file, then the environment variables `OBSIDIAN_TODOS_VAULT` / `OBSIDIAN_VAULT_PATH` / `OBSIDIAN_VAULT_ROOT`, then the default iCloud vault.
 
@@ -109,7 +112,7 @@ Tweakables at the top of `obsidian-todos.lua`:
 - Watches one vault at a time, though the scan can be scoped to folders within it.
 - Only checkbox lines are tasks. No recurring tasks.
 - It is a menu, not a notifier. Nothing pops up when a task comes due.
-- Scans skip `Archive/`, `Templates/`, `.obsidian/`, and `.trash/` by default; see `excludeFolders` above. Notes with `obsidian-todos-ignore: true` in their frontmatter are excluded entirely.
+- Scans skip `Archive/`, `Templates/`, `.obsidian/`, and `.trash/` by default; see `excludeFolders` above. Notes with `obsidian-todos-ignore: true` in their frontmatter are excluded entirely, as are tasks tagged with anything in `excludeTags`.
 
 ## Troubleshooting
 
